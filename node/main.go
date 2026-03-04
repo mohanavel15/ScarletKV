@@ -7,6 +7,16 @@ import (
 )
 
 func main() {
+
+	sm := NewStateMachine()
+
+	PrintStartUpInfo()
+
+	handler := NewHTTPHandler(&sm)
+	handler.ListenAndServe()
+}
+
+func PrintStartUpInfo() {
 	itfs, _ := net.Interfaces()
 
 	for _, itf := range itfs {
