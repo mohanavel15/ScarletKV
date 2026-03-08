@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 	"time"
 )
@@ -58,7 +57,7 @@ func (h *HTTPHandler) DeleteKey(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, "Key deleted")
 }
 
-func (h *HTTPHandler) ListenAndServe() {
+func (h *HTTPHandler) ListenAndServe(port int) error {
 	handler := http.ServeMux{}
 
 	handler.HandleFunc("/keys", func(w http.ResponseWriter, r *http.Request) {
@@ -84,14 +83,12 @@ func (h *HTTPHandler) ListenAndServe() {
 	})
 
 	server := http.Server{
-		Addr:         ":8080", // TODO: make this configurable
+		Addr:         fmt.Sprintf(":%d", port),
 		Handler:      &handler,
 		ReadTimeout:  time.Second * 3,
 		WriteTimeout: time.Second * 3,
 		IdleTimeout:  time.Second * 3,
 	}
 
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatalln(err.Error())
-	}
+	return server.ListenAndServe()
 }
