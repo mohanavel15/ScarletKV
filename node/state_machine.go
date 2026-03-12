@@ -50,6 +50,13 @@ func (sm *StateMachine) GetId() string {
 	return sm.ip
 }
 
+func (sm *StateMachine) SetState(state NodeState) {
+	sm.mx.Lock()
+	defer sm.mx.Unlock()
+
+	sm.state = state
+}
+
 func (sm *StateMachine) GetTerm() int64 {
 	sm.mx.RLock()
 	defer sm.mx.RUnlock()
