@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -16,7 +17,15 @@ func NewHTTPHandler(sm *StateMachine) HTTPHandler {
 	}
 }
 
-func (h *HTTPHandler) GetKeys() {}
+func (h *HTTPHandler) GetKeys(w http.ResponseWriter, r *http.Request) {
+	keys := make([]string, 0, len(h.sm.store))
+	for k := range h.sm.store {
+		keys = append(keys, k)
+	}
+
+	fmt.Fprint(w, strings.Join(keys, "\n"))
+
+}
 
 func (h *HTTPHandler) GetKey(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Path[len("/keys/"):]
@@ -28,7 +37,7 @@ func (h *HTTPHandler) GetKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fmt.Fprintf(w, "%s", value)
+	fmt.Fprint(w, value)
 }
 
 func (h *HTTPHandler) SetKey(w http.ResponseWriter, r *http.Request) {
@@ -57,13 +66,13 @@ func (h *HTTPHandler) DeleteKey(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, "Key deleted")
 }
 
-func (h *HTTPHandler) ListenAndServe(port int) error {
+func (h *HTTPHandler) ListenAndServe(addr string) error {
 	handler := http.ServeMux{}
 
 	handler.HandleFunc("/keys", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			fmt.Fprintf(w, "GET %s", r.URL.Path)
+			h.GetKeys(w, r)
 		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -83,7 +92,7 @@ func (h *HTTPHandler) ListenAndServe(port int) error {
 	})
 
 	server := http.Server{
-		Addr:         fmt.Sprintf(":%d", port),
+		Addr:         addr,
 		Handler:      &handler,
 		ReadTimeout:  time.Second * 3,
 		WriteTimeout: time.Second * 3,

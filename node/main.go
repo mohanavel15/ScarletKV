@@ -15,16 +15,16 @@ var nodes = map[string]int64{
 }
 
 func main() {
-	sm := NewStateMachine()
-
 	ip := PrintStartUpInfo()
 	delete(nodes, ip)
 
+	sm := NewStateMachine(ip)
+
 	handler := NewHTTPHandler(&sm)
-	go handler.ListenAndServe(8080)
+	go handler.ListenAndServe(":8080")
 
 	raft_handler := NewRAFTServer(&sm)
-	raft_handler.ListenAndServe(6000)
+	raft_handler.ListenAndServe(":6000")
 }
 
 func PrintStartUpInfo() string {

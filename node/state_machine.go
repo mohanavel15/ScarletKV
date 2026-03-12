@@ -1,43 +1,53 @@
 package main
 
 import (
-	"math/rand"
+	"math/rand/v2"
 	"sync"
 )
 
 type NodeState int
 
 const (
-	UNKNOWN NodeState = iota
-	FOLLOWER
+	FOLLOWER NodeState = iota
 	CANDIDATE
 	LEADER
 )
 
 type StateMachine struct {
-	id       int64
+	ip      string
+	store   map[string]string
+	mx      sync.RWMutex
+	timeout int64
+
+	// General States
 	term     int64
 	logIndex int64
-	store    map[string]string
-	votedFor int64
+	votedFor string
 	state    NodeState
-	timeout  int64
-	mx       sync.RWMutex
+
+	// Volatile States
+	commitIndex int64
+	lastApplied int64
+
+	// Volatile Leader States
+	nextIndex  map[string]int64
+	matchIndex map[string]int64
 }
 
-func NewStateMachine() StateMachine {
+func NewStateMachine(ip string) StateMachine {
 	return StateMachine{
-		term:     -1,
+		ip:       ip,
+		term:     0,
 		logIndex: -1,
 		store:    map[string]string{},
-		votedFor: -1,
-		state:    UNKNOWN,
-		timeout:  rand.Int63n(150) + 150, // 150-300ms
+		votedFor: "",
+		state:    FOLLOWER,
+		timeout:  rand.Int64N(150) + 150, // 150-300ms
 	}
 }
 
-func (sm *StateMachine) GetId() int64 {
-	return sm.id
+func (sm *StateMachine) GetId() string {
+	return sm.ip
 }
 
 func (sm *StateMachine) GetTerm() int64 {
@@ -82,14 +92,14 @@ func (sm *StateMachine) IncLogIndex() {
 	sm.logIndex += 1
 }
 
-func (sm *StateMachine) GetVotedFor() int64 {
+func (sm *StateMachine) GetVotedFor() string {
 	sm.mx.RLock()
 	defer sm.mx.RUnlock()
 
 	return sm.votedFor
 }
 
-func (sm *StateMachine) SetVotedFor(votedFor int64) {
+func (sm *StateMachine) SetVotedFor(votedFor string) {
 	sm.mx.Lock()
 	defer sm.mx.Unlock()
 

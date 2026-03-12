@@ -12,8 +12,9 @@ import (
 )
 
 type Peer struct {
-	ip string
-	c  *pb.RAFTClient
+	ip       string
+	c        *pb.RAFTClient
+	logIndex int64
 }
 
 func NewPeer(ip string, port int) (Peer, error) {
@@ -26,8 +27,9 @@ func NewPeer(ip string, port int) (Peer, error) {
 	c := pb.NewRAFTClient(conn)
 
 	return Peer{
-		ip: ip,
-		c:  &c,
+		ip:       ip,
+		c:        &c,
+		logIndex: -1,
 	}, nil
 }
 
@@ -74,16 +76,23 @@ func (s *RAFTServer) AppendEntries(ctx context.Context, req *pb.AppendRequest) (
 		}, nil
 	}
 
-	if req.GetPrevLogIndex() < s.sm.GetLogIndex() {
+	if req.GetPrevLogIndex() < s.sm.GetLogIndex() && req.Term <= s.sm.GetTerm() {
 		return &pb.AppendResponse{
 			Term:    s.sm.GetTerm(),
 			Success: false,
 		}, nil
 	}
 
+	if req.Term > s.sm.GetTerm() {
+		s.sm.SetTerm(req.Term)
+
+		if s.sm.state != FOLLOWER {
+			s.sm.state = FOLLOWER
+		}
+	}
+
 	fmt.Println("FIX ME!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! server.go:L59")
 
-	s.sm.SetTerm(req.Term)
 	s.sm.IncLogIndex()
 
 	return &pb.AppendResponse{
@@ -92,8 +101,8 @@ func (s *RAFTServer) AppendEntries(ctx context.Context, req *pb.AppendRequest) (
 	}, nil
 }
 
-func (s *RAFTServer) ListenAndServe(port int) error {
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+func (s *RAFTServer) ListenAndServe(addr string) error {
+	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("failed to listen: %v", err)
 	}
