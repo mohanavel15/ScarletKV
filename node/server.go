@@ -70,6 +70,39 @@ func (s *RAFTServer) HandleTimeout() {
 	}
 }
 
+func (s *RAFTServer) StartHeartBeat() {
+	heart_beat_ms := time.Duration(TIME_RATE-50) * time.Millisecond
+
+	timer := time.NewTimer(heart_beat_ms)
+
+	for {
+		if s.sm.state != LEADER {
+			break
+		}
+
+		for _, peer := range s.peers {
+			go func() {
+				ctx := context.Background()
+				_, err := peer.c.AppendEntries(ctx, &pb.AppendRequest{
+					Term:         s.sm.GetTerm(),
+					LeaderId:     s.sm.GetId(),
+					PrevLogIndex: s.sm.GetLogIndex(),
+					PrevLogTerm:  s.sm.GetTerm(),
+					LeaderCommit: -1,
+					Entries:      []*pb.LogEntry{},
+				})
+
+				if err != nil {
+					log.Printf("PROGRAMMING GODS IDK WHAT TO HERE %v\n", err)
+					return
+				}
+			}()
+		}
+		<-timer.C
+		timer.Reset(heart_beat_ms)
+	}
+}
+
 func (s *RAFTServer) StartLeaderElection() {
 	log.Println("STARTING AN ELETION")
 
@@ -120,7 +153,7 @@ func (s *RAFTServer) StartLeaderElection() {
 	}()
 
 	voteCount := 1
-	timer := time.NewTimer(100 * time.Millisecond)
+	timer := time.NewTimer(time.Duration(TIME_RATE-50) * time.Millisecond)
 
 	breakLoop := false
 	for !breakLoop {
@@ -144,12 +177,13 @@ func (s *RAFTServer) StartLeaderElection() {
 	s.ResetTimer()
 
 	log.Println("I BECOME A LEADER!!!")
+
+	go s.StartHeartBeat()
 }
 
 func (s *RAFTServer) RequestVote(ctx context.Context, req *pb.VoteRequest) (*pb.VoteResponse, error) {
-	log.Println("RECEIVED VOTE REQUEST")
-
 	s.ResetTimer()
+	log.Println("RECEIVED VOTE REQUEST")
 
 	if req.Term <= s.sm.GetTerm() {
 		log.Println("VOTING CAUSE OF TERM", req.Term, s.sm.GetTerm())
@@ -205,7 +239,7 @@ func (s *RAFTServer) AppendEntries(ctx context.Context, req *pb.AppendRequest) (
 
 	fmt.Println("FIX ME!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! server.go:L59")
 
-	s.sm.IncLogIndex()
+	// s.sm.IncLogIndex()
 
 	return &pb.AppendResponse{
 		Term:    s.sm.GetTerm(),

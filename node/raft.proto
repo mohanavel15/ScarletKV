@@ -23,7 +23,7 @@ message VoteResponse {
 
 message AppendRequest {
   int64 term = 1;
-  int64 leaderId = 2;
+  string leaderId = 2;
   int64 prevLogIndex = 3;
   int64 prevLogTerm = 4;
   int64 leaderCommit = 5;

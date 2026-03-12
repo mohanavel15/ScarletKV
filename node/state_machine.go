@@ -5,6 +5,8 @@ import (
 	"sync"
 )
 
+var TIME_RATE int64 = 150
+
 type NodeState int
 
 const (
@@ -42,7 +44,7 @@ func NewStateMachine(ip string) StateMachine {
 		store:    map[string]string{},
 		votedFor: "",
 		state:    FOLLOWER,
-		timeout:  rand.Int64N(150) + 150, // 150-300ms
+		timeout:  rand.Int64N(TIME_RATE) + TIME_RATE,
 	}
 }
 
