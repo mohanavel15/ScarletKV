@@ -29,7 +29,7 @@ func main() {
 	go handler.ListenAndServe(":8080")
 
 	raft_handler := NewRAFTServer(&sm, node_ips)
-	raft_handler.ListenAndServe(":6000", node_ips)
+	raft_handler.ListenAndServe(":6000")
 }
 
 func PrintStartUpInfo() string {

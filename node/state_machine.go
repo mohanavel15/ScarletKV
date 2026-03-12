@@ -49,7 +49,17 @@ func NewStateMachine(ip string) StateMachine {
 }
 
 func (sm *StateMachine) GetId() string {
+	sm.mx.RLock()
+	defer sm.mx.RUnlock()
+
 	return sm.ip
+}
+
+func (sm *StateMachine) GetState() NodeState {
+	sm.mx.RLock()
+	defer sm.mx.RUnlock()
+
+	return sm.state
 }
 
 func (sm *StateMachine) SetState(state NodeState) {
