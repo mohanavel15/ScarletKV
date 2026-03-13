@@ -2,18 +2,22 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net/http"
+	pb "node/raft_pb"
 	"strings"
 	"time"
 )
 
 type HTTPHandler struct {
-	sm *StateMachine
+	sm    *StateMachine
+	distr chan *pb.LogEntry
 }
 
-func NewHTTPHandler(sm *StateMachine) HTTPHandler {
+func NewHTTPHandler(sm *StateMachine, distr chan *pb.LogEntry) HTTPHandler {
 	return HTTPHandler{
-		sm: sm,
+		sm:    sm,
+		distr: distr,
 	}
 }
 
@@ -55,6 +59,8 @@ func (h *HTTPHandler) SetKey(w http.ResponseWriter, r *http.Request) {
 	value := string(buffer[:n])
 	h.sm.Set(key, value)
 
+	h.Distribute(pb.OP_SET, key, value)
+
 	fmt.Fprint(w, "Key set")
 }
 
@@ -63,7 +69,32 @@ func (h *HTTPHandler) DeleteKey(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("Deleting key:", key)
 
 	h.sm.Delete(key)
+
+	h.Distribute(pb.OP_DELETE, key, "")
+
 	fmt.Fprint(w, "Key deleted")
+}
+
+func (h *HTTPHandler) Distribute(op pb.OP, key string, value string) {
+	go func() {
+		h.distr <- &pb.LogEntry{
+			Op:    op,
+			Key:   key,
+			Value: value,
+		}
+	}()
+}
+
+func (h *HTTPHandler) NonLeader(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h.sm.GetState() != LEADER {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+
+		log.Printf("Request: %s %s", r.Method, r.URL.Path)
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (h *HTTPHandler) ListenAndServe(addr string) error {
@@ -93,7 +124,7 @@ func (h *HTTPHandler) ListenAndServe(addr string) error {
 
 	server := http.Server{
 		Addr:         addr,
-		Handler:      &handler,
+		Handler:      h.NonLeader(&handler),
 		ReadTimeout:  time.Second * 3,
 		WriteTimeout: time.Second * 3,
 		IdleTimeout:  time.Second * 3,

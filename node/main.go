@@ -25,11 +25,11 @@ func main() {
 
 	sm := NewStateMachine(ip)
 
-	handler := NewHTTPHandler(&sm)
-	go handler.ListenAndServe(":8080")
+	raft := NewRaft(&sm, node_ips)
+	go raft.ListenAndServe(":6000")
 
-	raft_handler := NewRAFTServer(&sm, node_ips)
-	raft_handler.ListenAndServe(":6000")
+	handler := NewHTTPHandler(&sm, raft.DistributorC)
+	handler.ListenAndServe(":8080")
 }
 
 func PrintStartUpInfo() string {

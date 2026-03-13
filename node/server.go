@@ -38,6 +38,8 @@ type Raft struct {
 	timer *time.Timer
 	mx    sync.Mutex
 	peers map[string]*Peer
+
+	DistributorC chan *pb.LogEntry
 }
 
 func NewRaft(sm *StateMachine, node_ips []string) *Raft {
@@ -179,6 +181,33 @@ func (r *Raft) StartLeaderElection() {
 	log.Println("I BECOME A LEADER!!!")
 
 	go r.StartHeartBeat()
+}
+
+func (r *Raft) DistributeLogEntry() {
+	for logEntry := range r.DistributorC {
+		if r.sm.GetState() != LEADER {
+			continue
+		}
+
+		for _, peer := range r.peers {
+			go func() {
+				ctx := context.Background()
+				_, err := peer.c.AppendEntries(ctx, &pb.AppendRequest{
+					Term:         r.sm.GetTerm(),
+					LeaderId:     r.sm.GetId(),
+					PrevLogIndex: r.sm.GetLogIndex(),
+					PrevLogTerm:  r.sm.GetTerm(),
+					LeaderCommit: -1,
+					Entries:      []*pb.LogEntry{logEntry},
+				})
+
+				if err != nil {
+					log.Printf("PROGRAMMING GODS IDK WHAT TO HERE %v\n", err)
+					return
+				}
+			}()
+		}
+	}
 }
 
 func (r *Raft) RequestVote(ctx context.Context, req *pb.VoteRequest) (*pb.VoteResponse, error) {
