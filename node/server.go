@@ -19,24 +19,20 @@ type Peer struct {
 }
 
 func NewPeer(ip string, port int) *Peer {
+	// Well an interesting observation I had is it doesn't have to connect client? only connects when it needs to send messages?
+	conn, err := grpc.NewClient(fmt.Sprintf("%s:%d", ip, 6000), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		// What type error can even occur here?
+		fmt.Println("What happened here ????", err.Error())
+	}
+
 	return &Peer{
 		ip: ip,
-		c:  nil,
+		c:  pb.NewRAFTClient(conn),
 	}
 }
 
-func (p *Peer) Connect() error {
-	conn, err := grpc.NewClient(fmt.Sprintf("%s:%d", p.ip, 6000), grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return err
-	}
-
-	p.c = pb.NewRAFTClient(conn)
-
-	return nil
-}
-
-type RAFTServer struct {
+type Raft struct {
 	pb.UnimplementedRAFTServer
 	sm    *StateMachine
 	timer *time.Timer
@@ -44,7 +40,7 @@ type RAFTServer struct {
 	peers map[string]*Peer
 }
 
-func NewRAFTServer(sm *StateMachine, node_ips []string) *RAFTServer {
+func NewRaft(sm *StateMachine, node_ips []string) *Raft {
 	peers := map[string]*Peer{}
 
 	for _, ip := range node_ips {
@@ -52,51 +48,51 @@ func NewRAFTServer(sm *StateMachine, node_ips []string) *RAFTServer {
 		peers[ip] = peer
 	}
 
-	return &RAFTServer{
+	return &Raft{
 		sm:    sm,
 		timer: nil,
 		peers: peers,
 	}
 }
 
-func (s *RAFTServer) ResetTimer() {
-	s.mx.Lock()
-	defer s.mx.Unlock()
+func (r *Raft) ResetTimer() {
+	r.mx.Lock()
+	defer r.mx.Unlock()
 
-	s.timer.Reset(time.Duration(s.sm.timeout) * time.Millisecond)
+	r.timer.Reset(time.Duration(r.sm.timeout) * time.Millisecond)
 }
 
-func (s *RAFTServer) HandleTimeout() {
+func (r *Raft) HandleTimeout() {
 	for {
-		<-s.timer.C
-		if s.sm.GetState() == LEADER {
+		<-r.timer.C
+		if r.sm.GetState() == LEADER {
 			continue
 		}
 
-		fmt.Println("Hit The Timout!", s.sm.timeout, "ms")
-		s.StartLeaderElection()
+		fmt.Println("Hit The Timout!", r.sm.timeout, "ms")
+		r.StartLeaderElection()
 	}
 }
 
-func (s *RAFTServer) StartHeartBeat() {
+func (r *Raft) StartHeartBeat() {
 	heart_beat_ms := time.Duration(TIME_RATE) * time.Millisecond
 
 	timer := time.NewTimer(heart_beat_ms)
 
 	for {
-		if s.sm.GetState() != LEADER {
+		if r.sm.GetState() != LEADER {
 			timer.Stop()
 			break
 		}
 
-		for _, peer := range s.peers {
+		for _, peer := range r.peers {
 			go func() {
 				ctx := context.Background()
 				_, err := peer.c.AppendEntries(ctx, &pb.AppendRequest{
-					Term:         s.sm.GetTerm(),
-					LeaderId:     s.sm.GetId(),
-					PrevLogIndex: s.sm.GetLogIndex(),
-					PrevLogTerm:  s.sm.GetTerm(),
+					Term:         r.sm.GetTerm(),
+					LeaderId:     r.sm.GetId(),
+					PrevLogIndex: r.sm.GetLogIndex(),
+					PrevLogTerm:  r.sm.GetTerm(),
 					LeaderCommit: -1,
 					Entries:      []*pb.LogEntry{},
 				})
@@ -112,19 +108,19 @@ func (s *RAFTServer) StartHeartBeat() {
 	}
 }
 
-func (s *RAFTServer) StartLeaderElection() {
+func (r *Raft) StartLeaderElection() {
 	log.Println("STARTING AN ELETION")
 
-	s.sm.SetState(CANDIDATE)
+	r.sm.SetState(CANDIDATE)
 
-	votes := make(chan int, len(s.peers))
+	votes := make(chan int, len(r.peers))
 	cancelElection := false
 
-	new_term := s.sm.GetTerm() + 1
+	new_term := r.sm.GetTerm() + 1
 
 	go func() {
 		wg := sync.WaitGroup{}
-		for _, peer := range s.peers {
+		for _, peer := range r.peers {
 			wg.Add(1)
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), time.Duration(TIME_RATE-50)*time.Millisecond)
@@ -132,9 +128,9 @@ func (s *RAFTServer) StartLeaderElection() {
 
 				response, err := peer.c.RequestVote(ctx, &pb.VoteRequest{
 					Term:         new_term,
-					CandidateId:  s.sm.GetId(),
-					LastLogIndex: s.sm.GetLogIndex(),
-					LastLogTerm:  s.sm.GetTerm(),
+					CandidateId:  r.sm.GetId(),
+					LastLogIndex: r.sm.GetLogIndex(),
+					LastLogTerm:  r.sm.GetTerm(),
 				})
 
 				if err != nil {
@@ -147,9 +143,9 @@ func (s *RAFTServer) StartLeaderElection() {
 				if response.VoteGranted {
 					votes <- 1
 				} else {
-					if response.Term > s.sm.GetTerm() {
+					if response.Term > r.sm.GetTerm() {
 						cancelElection = true
-						s.sm.SetTerm(response.Term)
+						r.sm.SetTerm(response.Term)
 					} else {
 						votes <- -1
 					}
@@ -171,90 +167,99 @@ func (s *RAFTServer) StartLeaderElection() {
 
 	if cancelElection || voteCount <= 0 {
 		log.Println("ELECTION LOST / CANCELLED")
-		s.sm.SetState(FOLLOWER)
-		s.ResetTimer()
+		r.sm.SetState(FOLLOWER)
+		r.ResetTimer()
 		return
 	}
 
-	s.sm.SetState(LEADER)
-	s.sm.SetTerm(new_term)
-	s.ResetTimer()
+	r.sm.SetState(LEADER)
+	r.sm.SetTerm(new_term)
+	r.ResetTimer()
 
 	log.Println("I BECOME A LEADER!!!")
 
-	go s.StartHeartBeat()
+	go r.StartHeartBeat()
 }
 
-func (s *RAFTServer) RequestVote(ctx context.Context, req *pb.VoteRequest) (*pb.VoteResponse, error) {
-	s.ResetTimer()
+func (r *Raft) RequestVote(ctx context.Context, req *pb.VoteRequest) (*pb.VoteResponse, error) {
+	r.ResetTimer()
 
-	if req.Term <= s.sm.GetTerm() {
+	if req.Term <= r.sm.GetTerm() {
 		return &pb.VoteResponse{
-			Term:        s.sm.GetTerm(),
+			Term:        r.sm.GetTerm(),
 			VoteGranted: false,
 		}, nil
 	}
 
-	if req.LastLogIndex < s.sm.GetLogIndex() {
+	if req.LastLogIndex < r.sm.GetLogIndex() {
 		return &pb.VoteResponse{
-			Term:        s.sm.GetTerm(),
+			Term:        r.sm.GetTerm(),
 			VoteGranted: false,
 		}, nil
 	}
 
-	s.sm.SetTerm(req.Term)
-	s.sm.SetVotedFor(req.CandidateId)
-	s.sm.SetState(FOLLOWER)
+	r.sm.SetTerm(req.Term)
+	r.sm.SetVotedFor(req.CandidateId)
+	r.sm.SetState(FOLLOWER)
 
 	return &pb.VoteResponse{
-		Term:        s.sm.GetTerm(),
+		Term:        r.sm.GetTerm(),
 		VoteGranted: true,
 	}, nil
 }
 
-func (s *RAFTServer) AppendEntries(ctx context.Context, req *pb.AppendRequest) (*pb.AppendResponse, error) {
-	s.ResetTimer()
+func (r *Raft) AppendEntries(ctx context.Context, req *pb.AppendRequest) (*pb.AppendResponse, error) {
+	r.ResetTimer()
 
-	if req.Term < s.sm.GetTerm() {
+	if req.Term < r.sm.GetTerm() {
 		return &pb.AppendResponse{
-			Term:    s.sm.GetTerm(),
+			Term:    r.sm.GetTerm(),
 			Success: false,
 		}, nil
 	}
 
-	if req.GetPrevLogIndex() < s.sm.GetLogIndex() && req.Term <= s.sm.GetTerm() {
+	if req.GetPrevLogIndex() < r.sm.GetLogIndex() && req.Term <= r.sm.GetTerm() {
 		return &pb.AppendResponse{
-			Term:    s.sm.GetTerm(),
+			Term:    r.sm.GetTerm(),
 			Success: false,
 		}, nil
 	}
 
-	if req.Term > s.sm.GetTerm() {
-		s.sm.SetTerm(req.Term)
+	if req.Term > r.sm.GetTerm() {
+		r.sm.SetTerm(req.Term)
 
-		if s.sm.GetState() != FOLLOWER {
-			s.sm.SetState(FOLLOWER)
+		if r.sm.GetState() != FOLLOWER {
+			r.sm.SetState(FOLLOWER)
 		}
+	}
+
+	for _, entry := range req.Entries {
+		switch entry.Op {
+		case pb.OP_SET:
+			fmt.Println("Set")
+		case pb.OP_DELETE:
+			fmt.Println("Set")
+		}
+
+		r.sm.IncLogIndex()
 	}
 
 	fmt.Println("FIX ME!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! server.go:L240")
 
-	// s.sm.IncLogIndex()
-
 	return &pb.AppendResponse{
-		Term:    s.sm.GetTerm(),
+		Term:    r.sm.GetTerm(),
 		Success: true,
 	}, nil
 }
 
-func (s *RAFTServer) ListenAndServe(addr string) error {
+func (r *Raft) ListenAndServe(addr string) error {
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("failed to listen: %v", err)
 	}
 
 	grpcServer := grpc.NewServer()
-	pb.RegisterRAFTServer(grpcServer, s)
+	pb.RegisterRAFTServer(grpcServer, r)
 
 	errChan := make(chan error)
 
@@ -265,17 +270,10 @@ func (s *RAFTServer) ListenAndServe(addr string) error {
 
 	time.Sleep(500 * time.Millisecond)
 
-	for ip, peer := range s.peers {
-		err := peer.Connect()
-		if err != nil {
-			fmt.Println("unable to connection peer: ", ip, err.Error())
-		}
-	}
+	timer := time.NewTimer(time.Duration(r.sm.timeout) * time.Millisecond)
+	r.timer = timer
 
-	timer := time.NewTimer(time.Duration(s.sm.timeout) * time.Millisecond)
-	s.timer = timer
-
-	go s.HandleTimeout()
+	go r.HandleTimeout()
 
 	return <-errChan
 }

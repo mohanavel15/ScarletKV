@@ -35,8 +35,13 @@ message AppendResponse {
   bool success = 2;
 }
 
+enum OP {
+  SET = 0;
+  DELETE = 2;
+}
+
 message LogEntry {
-  string op = 1;
+  OP op = 1;
   string key = 2;
   string value = 3;
 }
