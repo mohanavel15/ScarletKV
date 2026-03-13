@@ -14,8 +14,9 @@ import (
 )
 
 type Peer struct {
-	ip string
-	c  pb.RAFTClient
+	ip   string
+	c    pb.RAFTClient
+	conn *grpc.ClientConn
 }
 
 func NewPeer(ip string, port int) *Peer {
@@ -27,33 +28,41 @@ func NewPeer(ip string, port int) *Peer {
 	}
 
 	return &Peer{
-		ip: ip,
-		c:  pb.NewRAFTClient(conn),
+		ip:   ip,
+		c:    pb.NewRAFTClient(conn),
+		conn: conn,
 	}
 }
 
 type Raft struct {
 	pb.UnimplementedRAFTServer
+	ip    string
+	port  int
 	sm    *StateMachine
 	timer *time.Timer
 	mx    sync.Mutex
 	peers map[string]*Peer
 
 	DistributorC chan *pb.LogEntry
+
+	server *grpc.Server
 }
 
-func NewRaft(sm *StateMachine, node_ips []string) *Raft {
+func NewRaft(ip string, port int, sm *StateMachine, node_ips []string) *Raft {
 	peers := map[string]*Peer{}
 
-	for _, ip := range node_ips {
-		peer := NewPeer(ip, 6000)
-		peers[ip] = peer
+	for _, peer_ip := range node_ips {
+		peer := NewPeer(peer_ip, port)
+		peers[peer_ip] = peer
 	}
 
 	return &Raft{
-		sm:    sm,
-		timer: nil,
-		peers: peers,
+		ip:     ip,
+		port:   port,
+		sm:     sm,
+		timer:  nil,
+		peers:  peers,
+		server: grpc.NewServer(),
 	}
 }
 
@@ -125,7 +134,7 @@ func (r *Raft) StartLeaderElection() {
 		for _, peer := range r.peers {
 			wg.Add(1)
 			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), time.Duration(TIME_RATE-50)*time.Millisecond)
+				ctx, cancel := context.WithTimeout(context.Background(), time.Duration(TIME_RATE)*time.Millisecond)
 				defer cancel()
 
 				response, err := peer.c.RequestVote(ctx, &pb.VoteRequest{
@@ -227,6 +236,8 @@ func (r *Raft) RequestVote(ctx context.Context, req *pb.VoteRequest) (*pb.VoteRe
 		}, nil
 	}
 
+	r.sm.SetLeader("")
+
 	r.sm.SetTerm(req.Term)
 	r.sm.SetVotedFor(req.CandidateId)
 	r.sm.SetState(FOLLOWER)
@@ -253,6 +264,8 @@ func (r *Raft) AppendEntries(ctx context.Context, req *pb.AppendRequest) (*pb.Ap
 			Success: false,
 		}, nil
 	}
+
+	r.sm.SetLeader(req.LeaderId)
 
 	if req.Term > r.sm.GetTerm() {
 		r.sm.SetTerm(req.Term)
@@ -281,23 +294,22 @@ func (r *Raft) AppendEntries(ctx context.Context, req *pb.AppendRequest) (*pb.Ap
 	}, nil
 }
 
-func (r *Raft) ListenAndServe(addr string) error {
-	lis, err := net.Listen("tcp", addr)
+func (r *Raft) ListenAndServe() error {
+	lis, err := net.Listen("tcp", fmt.Sprintf("%s:%d", r.ip, r.port))
 	if err != nil {
 		return fmt.Errorf("failed to listen: %v", err)
 	}
 
-	grpcServer := grpc.NewServer()
-	pb.RegisterRAFTServer(grpcServer, r)
+	pb.RegisterRAFTServer(r.server, r)
 
 	errChan := make(chan error)
 
 	go func() {
-		err := grpcServer.Serve(lis)
+		err := r.server.Serve(lis)
 		errChan <- err
 	}()
 
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(time.Duration(TIME_RATE*2) * time.Millisecond)
 
 	timer := time.NewTimer(time.Duration(r.sm.timeout) * time.Millisecond)
 	r.timer = timer
@@ -305,4 +317,15 @@ func (r *Raft) ListenAndServe(addr string) error {
 	go r.HandleTimeout()
 
 	return <-errChan
+}
+
+func (r *Raft) Close() {
+	for _, peer := range r.peers {
+		err := peer.conn.Close()
+		if err != nil {
+			log.Printf("Error closing connection %s: %v\n", peer.ip, err)
+		}
+	}
+
+	r.server.GracefulStop()
 }

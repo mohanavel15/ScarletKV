@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net"
 	"os"
+	"os/signal"
+	"syscall"
 )
 
 var nodes = map[string]bool{
@@ -25,11 +28,21 @@ func main() {
 
 	sm := NewStateMachine(ip)
 
-	raft := NewRaft(&sm, node_ips)
-	go raft.ListenAndServe(":6000")
+	man := NewServiceManager()
 
-	handler := NewHTTPHandler(&sm, raft.DistributorC)
-	handler.ListenAndServe(":8080")
+	raft := NewRaft(ip, 6000, &sm, node_ips)
+	man.addService("Raft", raft)
+
+	handler := NewHTTPHandler(ip, 8080, &sm, raft.DistributorC)
+	man.addService("RestAPI", handler)
+
+	man.Start()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop() // Realistically Never Runs. Or Does it? IDK.
+
+	<-ctx.Done()
+	man.Stop()
 }
 
 func PrintStartUpInfo() string {

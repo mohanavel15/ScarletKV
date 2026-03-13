@@ -16,10 +16,11 @@ const (
 )
 
 type StateMachine struct {
-	ip      string
-	store   map[string]string
-	mx      sync.RWMutex
-	timeout int64
+	ip       string
+	store    map[string]string
+	mx       sync.RWMutex
+	timeout  int64
+	leaderIP string
 
 	// General States
 	term     int64
@@ -67,6 +68,20 @@ func (sm *StateMachine) SetState(state NodeState) {
 	defer sm.mx.Unlock()
 
 	sm.state = state
+}
+
+func (sm *StateMachine) GetLeader() string {
+	sm.mx.RLock()
+	defer sm.mx.RUnlock()
+
+	return sm.leaderIP
+}
+
+func (sm *StateMachine) SetLeader(ip string) {
+	sm.mx.Lock()
+	defer sm.mx.Unlock()
+
+	sm.leaderIP = ip
 }
 
 func (sm *StateMachine) GetTerm() int64 {

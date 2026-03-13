@@ -10,14 +10,29 @@ import (
 )
 
 type HTTPHandler struct {
+	ip    string
+	port  int
 	sm    *StateMachine
 	distr chan *pb.LogEntry
+
+	server *http.Server
 }
 
-func NewHTTPHandler(sm *StateMachine, distr chan *pb.LogEntry) HTTPHandler {
-	return HTTPHandler{
-		sm:    sm,
-		distr: distr,
+func NewHTTPHandler(ip string, port int, sm *StateMachine, distr chan *pb.LogEntry) *HTTPHandler {
+	server := http.Server{
+		Addr:         fmt.Sprintf("%s:%d", ip, port),
+		Handler:      nil,
+		ReadTimeout:  time.Second * 3,
+		WriteTimeout: time.Second * 3,
+		IdleTimeout:  time.Second * 3,
+	}
+
+	return &HTTPHandler{
+		ip:     ip,
+		port:   port,
+		sm:     sm,
+		distr:  distr,
+		server: &server,
 	}
 }
 
@@ -87,17 +102,25 @@ func (h *HTTPHandler) Distribute(op pb.OP, key string, value string) {
 
 func (h *HTTPHandler) NonLeader(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if h.sm.GetState() != LEADER {
+		if h.sm.GetState() == LEADER {
+			log.Printf("Request: %s %s", r.Method, r.URL.Path)
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		leaderIP := h.sm.GetLeader()
+
+		if leaderIP == "" {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
 
-		log.Printf("Request: %s %s", r.Method, r.URL.Path)
-		next.ServeHTTP(w, r)
+		url := fmt.Sprintf("http://%s:%d%s", leaderIP, h.port, r.URL.Path)
+		http.Redirect(w, r, url, http.StatusPermanentRedirect)
 	})
 }
 
-func (h *HTTPHandler) ListenAndServe(addr string) error {
+func (h *HTTPHandler) ListenAndServe() error {
 	handler := http.ServeMux{}
 
 	handler.HandleFunc("/keys", func(w http.ResponseWriter, r *http.Request) {
@@ -122,13 +145,14 @@ func (h *HTTPHandler) ListenAndServe(addr string) error {
 		}
 	})
 
-	server := http.Server{
-		Addr:         addr,
-		Handler:      h.NonLeader(&handler),
-		ReadTimeout:  time.Second * 3,
-		WriteTimeout: time.Second * 3,
-		IdleTimeout:  time.Second * 3,
-	}
+	h.server.Handler = h.NonLeader(&handler)
+	return h.server.ListenAndServe()
+}
 
-	return server.ListenAndServe()
+func (h *HTTPHandler) Close() {
+	close(h.distr)
+	err := h.server.Close()
+	if err != nil {
+		log.Printf("Error Closing HTTP Server: %v\n", err)
+	}
 }
