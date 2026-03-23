@@ -37,10 +37,11 @@ func NewHTTPHandler(ip string, port int, sm *StateMachine, distr chan *pb.LogEnt
 }
 
 func (h *HTTPHandler) GetKeys(w http.ResponseWriter, r *http.Request) {
-	keys := make([]string, 0, len(h.sm.store))
-	for k := range h.sm.store {
-		keys = append(keys, k)
-	}
+	// keys := make([]string, 0, len(h.sm.store))
+	keys := make([]string, 0, 0)
+	// for k := range h.sm.Store. {
+	// 	keys = append(keys, k)
+	// }
 
 	fmt.Fprint(w, strings.Join(keys, "\n"))
 
@@ -49,7 +50,7 @@ func (h *HTTPHandler) GetKeys(w http.ResponseWriter, r *http.Request) {
 func (h *HTTPHandler) GetKey(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Path[len("/keys/"):]
 
-	value, ok := h.sm.Get(key)
+	value, ok := h.sm.Store.Get(key)
 
 	if !ok {
 		http.Error(w, "Key not found", http.StatusNotFound)
@@ -72,7 +73,7 @@ func (h *HTTPHandler) SetKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	value := string(buffer[:n])
-	h.sm.Set(key, value)
+	h.sm.Store.Set(key, value)
 
 	h.Distribute(pb.OP_SET, key, value)
 
@@ -83,7 +84,7 @@ func (h *HTTPHandler) DeleteKey(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Path[len("/keys/"):]
 	fmt.Println("Deleting key:", key)
 
-	h.sm.Delete(key)
+	h.sm.Store.Delete(key)
 
 	h.Distribute(pb.OP_DELETE, key, "")
 

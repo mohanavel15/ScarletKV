@@ -2,6 +2,7 @@ package main
 
 import (
 	"math/rand/v2"
+	pb "node/raft_pb"
 	"sync"
 )
 
@@ -17,36 +18,67 @@ const (
 
 type StateMachine struct {
 	ip       string
-	store    map[string]string
+	Store    SyncMap[string, string]
 	mx       sync.RWMutex
 	timeout  int64
 	leaderIP string
 
 	// General States
-	term     int64
-	logIndex int64
-	votedFor string
-	state    NodeState
+	term       int64
+	logIndex   int64
+	votedFor   string
+	state      NodeState
+	logEntries []*pb.LogEntry
 
 	// Volatile States
 	commitIndex int64
 	lastApplied int64
 
 	// Volatile Leader States
-	nextIndex  map[string]int64
-	matchIndex map[string]int64
+	NextIndex  SyncMap[string, int64]
+	MatchIndex SyncMap[string, int64]
 }
 
 func NewStateMachine(ip string) StateMachine {
 	return StateMachine{
 		ip:       ip,
-		term:     0,
-		logIndex: -1,
-		store:    map[string]string{},
-		votedFor: "",
-		state:    FOLLOWER,
+		Store:    NewSyncMap[string, string](),
 		timeout:  rand.Int64N(TIME_RATE) + TIME_RATE,
+		leaderIP: "",
+
+		// General States
+		term:       0,
+		logIndex:   -1,
+		votedFor:   "",
+		state:      FOLLOWER,
+		logEntries: []*pb.LogEntry{},
+
+		// Volatile States
+		commitIndex: -1,
+		lastApplied: -1,
+
+		// Volatile Leader States
+		NextIndex:  NewSyncMap[string, int64](),
+		MatchIndex: NewSyncMap[string, int64](),
 	}
+}
+
+func (sm *StateMachine) LogAppend(log *pb.LogEntry) {
+	sm.mx.Lock()
+	defer sm.mx.Unlock()
+
+	sm.logEntries = append(sm.logEntries, log)
+}
+
+func (sm *StateMachine) LogAppendOrInsertAt(idx int64, log *pb.LogEntry) {
+	sm.mx.Lock()
+	defer sm.mx.Unlock()
+
+	if idx < int64(len(sm.logEntries)) {
+		sm.logEntries[idx] = log
+	}
+
+	sm.logEntries = append(sm.logEntries, log)
 }
 
 func (sm *StateMachine) GetId() string {
@@ -91,11 +123,12 @@ func (sm *StateMachine) GetTerm() int64 {
 	return sm.term
 }
 
-func (sm *StateMachine) SetTerm(term int64) {
+func (sm *StateMachine) SetTerm(term int64, votedFor string) {
 	sm.mx.Lock()
 	defer sm.mx.Unlock()
 
 	sm.term = term
+	sm.votedFor = votedFor
 }
 
 func (sm *StateMachine) IncTerm() {
@@ -131,34 +164,4 @@ func (sm *StateMachine) GetVotedFor() string {
 	defer sm.mx.RUnlock()
 
 	return sm.votedFor
-}
-
-func (sm *StateMachine) SetVotedFor(votedFor string) {
-	sm.mx.Lock()
-	defer sm.mx.Unlock()
-
-	sm.votedFor = votedFor
-}
-
-func (sm *StateMachine) Set(key, value string) {
-	sm.mx.Lock()
-	defer sm.mx.Unlock()
-
-	sm.store[key] = value
-}
-
-func (sm *StateMachine) Get(key string) (string, bool) {
-	sm.mx.RLock()
-	defer sm.mx.RUnlock()
-
-	value, ok := sm.store[key]
-
-	return value, ok
-}
-
-func (sm *StateMachine) Delete(key string) {
-	sm.mx.Lock()
-	defer sm.mx.Unlock()
-
-	delete(sm.store, key)
 }
