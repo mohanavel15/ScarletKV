@@ -27,7 +27,7 @@ func (sm *ServiceManager) Start() {
 			log.Printf("Started %s Service\n", name)
 			err := service.ListenAndServe()
 			if err != nil {
-				log.Println("%s Service Error %v", name, err)
+				log.Printf("%s Service Error %v\n", name, err)
 			}
 		}()
 	}

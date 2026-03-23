@@ -1,6 +1,9 @@
 package main
 
-import "sync"
+import (
+	"encoding/json"
+	"sync"
+)
 
 // not happy with sync.Map so here is my own!
 type SyncMap[K comparable, V any] struct {
@@ -35,4 +38,20 @@ func (m *SyncMap[K, V]) Delete(key K) {
 	defer m.mx.Unlock()
 
 	delete(m.store, key)
+}
+
+func (m *SyncMap[K, V]) DumpMap() []byte {
+	m.mx.RLock()
+	defer m.mx.RUnlock()
+
+	data, _ := json.Marshal(m.store)
+
+	return data
+}
+
+func (m *SyncMap[K, V]) LoadMap(data []byte) error {
+	m.mx.Lock()
+	defer m.mx.Unlock()
+
+	return json.Unmarshal(data, &m.store)
 }

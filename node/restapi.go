@@ -5,7 +5,6 @@ import (
 	"log"
 	"net/http"
 	pb "node/raft_pb"
-	"strings"
 	"time"
 )
 
@@ -37,14 +36,8 @@ func NewHTTPHandler(ip string, port int, sm *StateMachine, distr chan *pb.LogEnt
 }
 
 func (h *HTTPHandler) GetKeys(w http.ResponseWriter, r *http.Request) {
-	// keys := make([]string, 0, len(h.sm.store))
-	keys := make([]string, 0, 0)
-	// for k := range h.sm.Store. {
-	// 	keys = append(keys, k)
-	// }
-
-	fmt.Fprint(w, strings.Join(keys, "\n"))
-
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(h.sm.Store.DumpMap())
 }
 
 func (h *HTTPHandler) GetKey(w http.ResponseWriter, r *http.Request) {
@@ -103,7 +96,7 @@ func (h *HTTPHandler) Distribute(op pb.OP, key string, value string) {
 
 func (h *HTTPHandler) NonLeader(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if h.sm.GetState() == LEADER {
+		if h.sm.GetState() == LEADER || r.URL.Path == "/keys" {
 			log.Printf("Request: %s %s", r.Method, r.URL.Path)
 			next.ServeHTTP(w, r)
 			return

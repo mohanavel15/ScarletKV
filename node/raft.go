@@ -57,12 +57,13 @@ func NewRaft(ip string, port int, sm *StateMachine, node_ips []string) *Raft {
 	}
 
 	return &Raft{
-		ip:     ip,
-		port:   port,
-		sm:     sm,
-		timer:  nil,
-		peers:  peers,
-		server: grpc.NewServer(),
+		ip:           ip,
+		port:         port,
+		sm:           sm,
+		timer:        nil,
+		peers:        peers,
+		DistributorC: make(chan *pb.LogEntry, len(peers)),
+		server:       grpc.NewServer(),
 	}
 }
 
