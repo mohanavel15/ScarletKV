@@ -55,7 +55,6 @@ func (h *HTTPHandler) GetKey(w http.ResponseWriter, r *http.Request) {
 
 func (h *HTTPHandler) SetKey(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Path[len("/keys/"):]
-	fmt.Println("Setting key:", key)
 
 	var buffer [1024]byte
 	n, err := r.Body.Read(buffer[:])
@@ -66,7 +65,6 @@ func (h *HTTPHandler) SetKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	value := string(buffer[:n])
-	h.sm.Store.Set(key, value)
 
 	h.Distribute(pb.OP_SET, key, value)
 
@@ -75,9 +73,6 @@ func (h *HTTPHandler) SetKey(w http.ResponseWriter, r *http.Request) {
 
 func (h *HTTPHandler) DeleteKey(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Path[len("/keys/"):]
-	fmt.Println("Deleting key:", key)
-
-	h.sm.Store.Delete(key)
 
 	h.Distribute(pb.OP_DELETE, key, "")
 

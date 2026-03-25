@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	pb "node/raft_pb"
+	"sort"
 	"sync"
 	"time"
 
@@ -97,24 +98,7 @@ func (r *Raft) StartHeartBeat() {
 			break
 		}
 
-		for _, peer := range r.peers {
-			go func() {
-				ctx := context.Background()
-				_, err := peer.c.AppendEntries(ctx, &pb.AppendRequest{
-					Term:         r.sm.GetTerm(),
-					LeaderId:     r.sm.GetId(),
-					PrevLogIndex: r.sm.GetLogIndex(),
-					PrevLogTerm:  r.sm.GetTerm(),
-					LeaderCommit: -1,
-					Entries:      []*pb.LogEntry{},
-				})
-
-				if err != nil {
-					log.Printf("PROGRAMMING GODS IDK WHAT TO HERE %v\n", err)
-					return
-				}
-			}()
-		}
+		r.ReplicateLog()
 		<-timer.C
 		timer.Reset(heart_beat_ms)
 	}
@@ -126,7 +110,6 @@ func (r *Raft) StartLeaderElection() {
 	r.sm.SetState(CANDIDATE)
 
 	votes := make(chan int, len(r.peers))
-	cancelElection := false
 
 	current_term := r.sm.GetTerm()
 	r.sm.SetTerm(current_term+1, r.sm.GetId())
@@ -146,24 +129,10 @@ func (r *Raft) StartLeaderElection() {
 					LastLogTerm:  current_term,
 				})
 
-				if err != nil {
-					log.Printf("PROGRAMMING GODS IDK WHAT TO HERE %v\n", err)
-					votes <- 0
-					wg.Done()
-					return
-				}
-
-				if response.VoteGranted {
+				if err == nil && response.VoteGranted {
 					votes <- 1
 				} else {
-					// if response.Term > r.sm.GetTerm() {
-					// 	cancelElection = true
-					// 	r.sm.SetTerm(response.Term, "")
-					// } else {
-					// 	votes <- -1
-					// }
-
-					votes <- -1
+					votes <- 0
 				}
 
 				wg.Done()
@@ -180,8 +149,8 @@ func (r *Raft) StartLeaderElection() {
 		voteCount += vote
 	}
 
-	if cancelElection || voteCount <= 0 {
-		log.Println("ELECTION LOST / CANCELLED")
+	if voteCount <= (len(r.peers) / 2) {
+		log.Println("ELECTION LOST")
 		r.sm.SetState(FOLLOWER)
 		r.ResetTimer()
 		return
@@ -193,6 +162,7 @@ func (r *Raft) StartLeaderElection() {
 	log.Println("I BECOME A LEADER!!!")
 
 	go r.StartHeartBeat()
+	go r.DistributeLogEntry()
 }
 
 func (r *Raft) DistributeLogEntry() {
@@ -202,6 +172,7 @@ func (r *Raft) DistributeLogEntry() {
 		}
 
 		r.sm.LogAppend(logEntry)
+		fmt.Println("Distributing logs.........")
 		r.ReplicateLog()
 	}
 }
@@ -226,13 +197,17 @@ func (r *Raft) ReplicateLog() {
 
 				logs := r.sm.logEntries[nextIdx:] // Probably will trigger come race condition but will deal with it later.
 
+				if len(logs) > 0 { // len 0 means heart beat
+					fmt.Printf("Sending logs from %d to %s\n", nextIdx, ip)
+				}
+
 				ctx := context.Background()
 				response, err := peer.c.AppendEntries(ctx, &pb.AppendRequest{
 					Term:         r.sm.GetTerm(),
 					LeaderId:     r.sm.GetId(),
 					PrevLogIndex: matchIdx,
-					PrevLogTerm:  r.sm.GetTerm(), // Huhhhhhhhhhhhhhhhhhhh what do I do here?
-					LeaderCommit: -1,             // Will come back to this.
+					PrevLogTerm:  r.sm.GetTerm(), // Huhhhhhhhhhhhhhhhhhhh what do I do here? PROBLEM TO BE DEALT WITH
+					LeaderCommit: r.sm.GetCommitIndex(),
 					Entries:      logs,
 				})
 
@@ -243,18 +218,41 @@ func (r *Raft) ReplicateLog() {
 				}
 
 				if response.Success {
-					r.sm.MatchIndex.Set(ip, nextIdx) // I need to check when to read Next Index, RN only writing.
+					r.sm.MatchIndex.Set(ip, matchIdx+int64(len(logs)))
 					r.sm.NextIndex.Set(ip, nextIdx+int64(len(logs)))
+
+					r.CheckAndCommit()
 					break
 				} else {
 					if nextIdx <= 0 {
 						log.Println("[nextIdx <= 0] THIS SHOULD NOT BE REACHABLE!")
+						break
 					}
 
 					r.sm.NextIndex.Set(ip, nextIdx-1)
 				}
 			}
 		}()
+	}
+}
+
+func (r *Raft) CheckAndCommit() {
+	matchIdxs := []int64{r.sm.GetLogIndex()}
+
+	for ip, _ := range r.peers {
+		idx, _ := r.sm.MatchIndex.Get(ip)
+		matchIdxs = append(matchIdxs, idx)
+	}
+
+	sort.Slice(matchIdxs, func(i, j int) bool {
+		return matchIdxs[i] > matchIdxs[j]
+	})
+
+	majority_idx := matchIdxs[len(matchIdxs)/2]
+
+	if majority_idx > r.sm.GetCommitIndex() {
+		fmt.Println("Mojority has replicated so commiting up to index ", majority_idx)
+		r.Commit(majority_idx)
 	}
 }
 
@@ -270,8 +268,6 @@ func (r *Raft) RequestVote(ctx context.Context, req *pb.VoteRequest) (*pb.VoteRe
 
 	if req.LastLogIndex < r.sm.GetLogIndex() {
 		r.sm.SetTerm(req.Term, "")
-
-		// r.StartLeaderElection() Not sure if this is what I'm supposed to do.
 
 		return &pb.VoteResponse{
 			Term:        r.sm.GetTerm(),
@@ -315,6 +311,8 @@ func (r *Raft) AppendEntries(ctx context.Context, req *pb.AppendRequest) (*pb.Ap
 
 	// Not sure about this part..... Will come to this later....
 	if req.GetPrevLogIndex() > r.sm.GetLogIndex() {
+		fmt.Println("There is were we are failing?", req.GetPrevLogIndex(), r.sm.GetLogIndex())
+
 		return &pb.AppendResponse{
 			Term:    r.sm.GetTerm(),
 			Success: false,
@@ -322,12 +320,15 @@ func (r *Raft) AppendEntries(ctx context.Context, req *pb.AppendRequest) (*pb.Ap
 	}
 
 	for idx, logE := range req.Entries {
+		fmt.Println("Adding entries eh")
 		r.sm.LogAppendOrInsertAt(req.PrevLogIndex+1+int64(idx), logE)
 	}
 
 	r.sm.SetLogIndex(req.PrevLogIndex + int64(len(req.Entries)))
+	fmt.Println("setting log index to ", req.PrevLogIndex+int64(len(req.Entries)), "--", req.PrevLogIndex, int64(len(req.Entries)))
 
 	if req.LeaderCommit > r.sm.commitIndex {
+		fmt.Println("Committing to match leader....")
 		r.Commit(req.LeaderCommit)
 	}
 
@@ -338,10 +339,24 @@ func (r *Raft) AppendEntries(ctx context.Context, req *pb.AppendRequest) (*pb.Ap
 }
 
 func (r *Raft) Commit(logIdx int64) {
-	for i := r.sm.commitIndex + 1; i < logIdx+1; i++ {
+	commitIdx := r.sm.GetCommitIndex()
 
+	if logIdx <= commitIdx {
+		return
 	}
 
+	for i := commitIdx + 1; i < logIdx+1; i++ {
+		logEntry := r.sm.logEntries[i]
+
+		switch logEntry.Op {
+		case pb.OP_SET:
+			r.sm.Store.Set(logEntry.Key, logEntry.Value)
+		case pb.OP_DELETE:
+			r.sm.Store.Delete(logEntry.Key)
+		}
+	}
+
+	r.sm.SetCommitIndex(logIdx)
 }
 
 func (r *Raft) ListenAndServe() error {

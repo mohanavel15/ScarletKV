@@ -68,6 +68,7 @@ func (sm *StateMachine) LogAppend(log *pb.LogEntry) {
 	defer sm.mx.Unlock()
 
 	sm.logEntries = append(sm.logEntries, log)
+	sm.logIndex += 1
 }
 
 func (sm *StateMachine) LogAppendOrInsertAt(idx int64, log *pb.LogEntry) {
@@ -131,13 +132,6 @@ func (sm *StateMachine) SetTerm(term int64, votedFor string) {
 	sm.votedFor = votedFor
 }
 
-func (sm *StateMachine) IncTerm() {
-	sm.mx.Lock()
-	defer sm.mx.Unlock()
-
-	sm.term += 1
-}
-
 func (sm *StateMachine) GetLogIndex() int64 {
 	sm.mx.RLock()
 	defer sm.mx.RUnlock()
@@ -152,16 +146,23 @@ func (sm *StateMachine) SetLogIndex(logIndex int64) {
 	sm.logIndex = logIndex
 }
 
-func (sm *StateMachine) IncLogIndex() {
-	sm.mx.Lock()
-	defer sm.mx.Unlock()
-
-	sm.logIndex += 1
-}
-
 func (sm *StateMachine) GetVotedFor() string {
 	sm.mx.RLock()
 	defer sm.mx.RUnlock()
 
 	return sm.votedFor
+}
+
+func (sm *StateMachine) GetCommitIndex() int64 {
+	sm.mx.RLock()
+	defer sm.mx.RUnlock()
+
+	return sm.commitIndex
+}
+
+func (sm *StateMachine) SetCommitIndex(idx int64) {
+	sm.mx.Lock()
+	defer sm.mx.Unlock()
+
+	sm.commitIndex = idx
 }
