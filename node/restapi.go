@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	pb "node/raft_pb"
+	"os"
 	"time"
 )
 
@@ -79,6 +80,11 @@ func (h *HTTPHandler) DeleteKey(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, "Key deleted")
 }
 
+func (h *HTTPHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(h.sm.ToJSON())
+}
+
 func (h *HTTPHandler) Distribute(op pb.OP, key string, value string) {
 	go func() {
 		h.distr <- &pb.LogEntry{
@@ -91,8 +97,11 @@ func (h *HTTPHandler) Distribute(op pb.OP, key string, value string) {
 
 func (h *HTTPHandler) NonLeader(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if h.sm.GetState() == LEADER || r.URL.Path == "/keys" {
-			log.Printf("Request: %s %s", r.Method, r.URL.Path)
+		if h.sm.GetState() == LEADER || len(r.URL.Path) < len("/keys") || r.URL.Path[:len("/keys")] != "/keys" {
+			if r.URL.Path != "/status" {
+				log.Printf("Request: %s %s", r.Method, r.URL.Path)
+			}
+
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -109,6 +118,20 @@ func (h *HTTPHandler) NonLeader(next http.Handler) http.Handler {
 	})
 }
 
+func CORS(next http.Handler) http.Handler {
+	// This func from: https://www.stackhawk.com/blog/golang-cors-guide-what-it-is-and-how-to-enable-it/
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (h *HTTPHandler) ListenAndServe() error {
 	handler := http.ServeMux{}
 
@@ -116,6 +139,26 @@ func (h *HTTPHandler) ListenAndServe() error {
 		switch r.Method {
 		case http.MethodGet:
 			h.GetKeys(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	handler.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			h.GetStatus(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	handler.HandleFunc("/kill", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			fmt.Fprint(w, "Okay")
+			time.Sleep(100 * time.Millisecond)
+			os.Exit(1)
 		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -134,7 +177,7 @@ func (h *HTTPHandler) ListenAndServe() error {
 		}
 	})
 
-	h.server.Handler = h.NonLeader(&handler)
+	h.server.Handler = CORS(h.NonLeader(&handler))
 	return h.server.ListenAndServe()
 }
 
