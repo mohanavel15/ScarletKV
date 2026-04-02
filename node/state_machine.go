@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"math/rand/v2"
 	pb "node/raft_pb"
 	"sync"
 )
@@ -44,7 +43,6 @@ func NewStateMachine(ip string) StateMachine {
 	return StateMachine{
 		ip:       ip,
 		Store:    NewSyncMap[string, string](),
-		timeout:  rand.Int64N(TIME_RATE) + TIME_RATE,
 		leaderIP: "",
 
 		// General States
@@ -128,6 +126,10 @@ func (sm *StateMachine) GetTerm() int64 {
 func (sm *StateMachine) SetTerm(term int64, votedFor string) {
 	sm.mx.Lock()
 	defer sm.mx.Unlock()
+
+	if term <= sm.term {
+		return
+	}
 
 	sm.term = term
 	sm.votedFor = votedFor

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"net"
 	pb "node/raft_pb"
 	"sort"
@@ -72,7 +73,7 @@ func (r *Raft) ResetTimer() {
 	r.mx.Lock()
 	defer r.mx.Unlock()
 
-	r.timer.Reset(time.Duration(r.sm.timeout) * time.Millisecond)
+	r.timer.Reset(time.Duration(rand.Int64N(TIME_RATE)+TIME_RATE) * time.Millisecond)
 }
 
 func (r *Raft) HandleTimeout() {
@@ -180,26 +181,21 @@ func (r *Raft) DistributeLogEntry() {
 func (r *Raft) ReplicateLog() {
 	for ip, peer := range r.peers {
 		go func() {
-			retryConn := 0
-
-			for retryConn < 3 {
+			for {
 				nextIdx, ok := r.sm.NextIndex.Get(ip)
 				if !ok {
-					r.sm.NextIndex.Set(ip, 0)
-					nextIdx = 0
+					r.sm.NextIndex.Set(ip, r.sm.GetLogIndex()+1)
+					nextIdx = r.sm.GetLogIndex() + 1
 				}
 
 				matchIdx, ok := r.sm.MatchIndex.Get(ip)
 				if !ok {
-					r.sm.MatchIndex.Set(ip, -1)
-					matchIdx = -1
+					// TODO: is problematic. this should be -1.
+					r.sm.MatchIndex.Set(ip, r.sm.GetLogIndex())
+					matchIdx = r.sm.GetLogIndex()
 				}
 
 				logs := r.sm.logEntries[nextIdx:] // Probably will trigger come race condition but will deal with it later.
-
-				if len(logs) > 0 { // len 0 means heart beat
-					fmt.Printf("Sending logs from %d to %s\n", nextIdx, ip)
-				}
 
 				ctx := context.Background()
 				response, err := peer.c.AppendEntries(ctx, &pb.AppendRequest{
@@ -212,24 +208,28 @@ func (r *Raft) ReplicateLog() {
 				})
 
 				if err != nil { // If it errors the then client is offline.
-					retryConn += 1
-					log.Printf("[%s] Connection Error will Retry Again...\n", ip)
-					continue
+					break // Update during next heart beat
 				}
 
 				if response.Success {
-					r.sm.MatchIndex.Set(ip, matchIdx+int64(len(logs)))
+					r.sm.MatchIndex.Set(ip, nextIdx+int64(len(logs))-1)
 					r.sm.NextIndex.Set(ip, nextIdx+int64(len(logs)))
 
 					r.CheckAndCommit()
 					break
 				} else {
+					// note; nextIdx == 0 && matchIdx == -1 is fine, but i check this because, we don't want to go below this.
 					if nextIdx <= 0 {
 						log.Println("[nextIdx <= 0] THIS SHOULD NOT BE REACHABLE!")
 						break
 					}
-
 					r.sm.NextIndex.Set(ip, nextIdx-1)
+
+					if matchIdx <= -1 {
+						log.Println("[matchIdx <= -1] THIS SHOULD NOT BE REACHABLE!")
+						break
+					}
+					r.sm.MatchIndex.Set(ip, matchIdx-1)
 				}
 			}
 		}()
@@ -257,9 +257,15 @@ func (r *Raft) CheckAndCommit() {
 }
 
 func (r *Raft) RequestVote(ctx context.Context, req *pb.VoteRequest) (*pb.VoteResponse, error) {
-	r.ResetTimer()
-
 	if req.Term <= r.sm.GetTerm() {
+		return &pb.VoteResponse{
+			Term:        r.sm.GetTerm(),
+			VoteGranted: false,
+		}, nil
+	}
+
+	// Huhhhhhhhhhhhhhhhhhhhh
+	if r.sm.GetTerm() == req.Term && r.sm.GetVotedFor() != "" {
 		return &pb.VoteResponse{
 			Term:        r.sm.GetTerm(),
 			VoteGranted: false,
@@ -273,8 +279,9 @@ func (r *Raft) RequestVote(ctx context.Context, req *pb.VoteRequest) (*pb.VoteRe
 			Term:        r.sm.GetTerm(),
 			VoteGranted: false,
 		}, nil
-
 	}
+
+	r.ResetTimer()
 
 	r.sm.SetLeader("")
 	r.sm.SetTerm(req.Term, req.CandidateId)
@@ -309,10 +316,7 @@ func (r *Raft) AppendEntries(ctx context.Context, req *pb.AppendRequest) (*pb.Ap
 		}
 	}
 
-	// Not sure about this part..... Will come to this later....
 	if req.GetPrevLogIndex() > r.sm.GetLogIndex() {
-		fmt.Println("There is were we are failing?", req.GetPrevLogIndex(), r.sm.GetLogIndex())
-
 		return &pb.AppendResponse{
 			Term:    r.sm.GetTerm(),
 			Success: false,
@@ -320,15 +324,12 @@ func (r *Raft) AppendEntries(ctx context.Context, req *pb.AppendRequest) (*pb.Ap
 	}
 
 	for idx, logE := range req.Entries {
-		fmt.Println("Adding entries eh")
+		fmt.Println("Adding entries...")
 		r.sm.LogAppendOrInsertAt(req.PrevLogIndex+1+int64(idx), logE)
 	}
 
-	r.sm.SetLogIndex(req.PrevLogIndex + int64(len(req.Entries)))
-	fmt.Println("setting log index to ", req.PrevLogIndex+int64(len(req.Entries)), "--", req.PrevLogIndex, int64(len(req.Entries)))
-
 	if req.LeaderCommit > r.sm.commitIndex {
-		fmt.Println("Committing to match leader....")
+		fmt.Println("Committing to match leader...")
 		r.Commit(req.LeaderCommit)
 	}
 
