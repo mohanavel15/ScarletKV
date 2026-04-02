@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math/rand/v2"
 	"net"
 	pb "node/raft_pb"
 	"sort"
@@ -73,7 +72,7 @@ func (r *Raft) ResetTimer() {
 	r.mx.Lock()
 	defer r.mx.Unlock()
 
-	r.timer.Reset(time.Duration(rand.Int64N(TIME_RATE)+TIME_RATE) * time.Millisecond)
+	r.timer.Reset(time.Duration(r.sm.timeout) * time.Millisecond)
 }
 
 func (r *Raft) HandleTimeout() {
@@ -90,7 +89,6 @@ func (r *Raft) HandleTimeout() {
 
 func (r *Raft) StartHeartBeat() {
 	heart_beat_ms := time.Duration(TIME_RATE) * time.Millisecond
-
 	timer := time.NewTimer(heart_beat_ms)
 
 	for {
@@ -127,7 +125,7 @@ func (r *Raft) StartLeaderElection() {
 					Term:         current_term + 1,
 					CandidateId:  r.sm.GetId(),
 					LastLogIndex: r.sm.GetLogIndex(),
-					LastLogTerm:  current_term,
+					LastLogTerm:  r.sm.GetPrevLogTerm(),
 				})
 
 				if err == nil && response.VoteGranted {
@@ -201,8 +199,8 @@ func (r *Raft) ReplicateLog() {
 				response, err := peer.c.AppendEntries(ctx, &pb.AppendRequest{
 					Term:         r.sm.GetTerm(),
 					LeaderId:     r.sm.GetId(),
-					PrevLogIndex: matchIdx,
-					PrevLogTerm:  r.sm.GetTerm(), // Huhhhhhhhhhhhhhhhhhhh what do I do here? PROBLEM TO BE DEALT WITH
+					PrevLogIndex: matchIdx, // Actully this is  problematic....
+					PrevLogTerm:  r.sm.GetPrevLogTerm(),
 					LeaderCommit: r.sm.GetCommitIndex(),
 					Entries:      logs,
 				})

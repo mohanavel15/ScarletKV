@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"math/rand/v2"
 	pb "node/raft_pb"
 	"sync"
 )
@@ -44,6 +45,7 @@ func NewStateMachine(ip string) StateMachine {
 		ip:       ip,
 		Store:    NewSyncMap[string, string](),
 		leaderIP: "",
+		timeout:  rand.Int64N(TIME_RATE) + TIME_RATE,
 
 		// General States
 		term:       0,
@@ -76,9 +78,12 @@ func (sm *StateMachine) LogAppendOrInsertAt(idx int64, log *pb.LogEntry) {
 
 	if idx < int64(len(sm.logEntries)) {
 		sm.logEntries[idx] = log
+		sm.logIndex = idx
+		return
 	}
 
 	sm.logEntries = append(sm.logEntries, log)
+	sm.logIndex += 1
 }
 
 func (sm *StateMachine) GetId() string {
@@ -123,6 +128,17 @@ func (sm *StateMachine) GetTerm() int64 {
 	return sm.term
 }
 
+func (sm *StateMachine) GetPrevLogTerm() int64 {
+	sm.mx.RLock()
+	defer sm.mx.RUnlock()
+
+	if sm.logIndex <= -1 {
+		return sm.term
+	}
+
+	return sm.logEntries[sm.logIndex].Term
+}
+
 func (sm *StateMachine) SetTerm(term int64, votedFor string) {
 	sm.mx.Lock()
 	defer sm.mx.Unlock()
@@ -140,13 +156,6 @@ func (sm *StateMachine) GetLogIndex() int64 {
 	defer sm.mx.RUnlock()
 
 	return sm.logIndex
-}
-
-func (sm *StateMachine) SetLogIndex(logIndex int64) {
-	sm.mx.Lock()
-	defer sm.mx.Unlock()
-
-	sm.logIndex = logIndex
 }
 
 func (sm *StateMachine) GetVotedFor() string {
