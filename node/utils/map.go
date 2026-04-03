@@ -1,4 +1,4 @@
-package main
+package utils
 
 import (
 	"encoding/json"
@@ -40,7 +40,15 @@ func (m *SyncMap[K, V]) Delete(key K) {
 	delete(m.store, key)
 }
 
-func (m *SyncMap[K, V]) DumpMap() []byte {
+// Danger !!! Should be deep copy....
+func (m *SyncMap[K, V]) DumpMap() map[K]V {
+	m.mx.RLock()
+	defer m.mx.RUnlock()
+
+	return m.store
+}
+
+func (m *SyncMap[K, V]) DumpMapJSON() []byte {
 	m.mx.RLock()
 	defer m.mx.RUnlock()
 

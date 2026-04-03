@@ -1,10 +1,12 @@
-package main
+package raft
 
 import (
 	"encoding/json"
 	"math/rand/v2"
-	pb "node/raft_pb"
+	"node/raft_proto"
 	"sync"
+
+	"node/utils"
 )
 
 var TIME_RATE int64 = 150
@@ -19,7 +21,7 @@ const (
 
 type StateMachine struct {
 	ip       string
-	Store    SyncMap[string, string]
+	Store    utils.SyncMap[string, string]
 	mx       sync.RWMutex
 	timeout  int64
 	leaderIP string
@@ -29,21 +31,21 @@ type StateMachine struct {
 	logIndex   int64
 	votedFor   string
 	state      NodeState
-	logEntries []*pb.LogEntry
+	logEntries []*raft_proto.LogEntry
 
 	// Volatile States
 	commitIndex int64
 	lastApplied int64
 
 	// Volatile Leader States
-	NextIndex  SyncMap[string, int64]
-	MatchIndex SyncMap[string, int64]
+	NextIndex  utils.SyncMap[string, int64]
+	MatchIndex utils.SyncMap[string, int64]
 }
 
 func NewStateMachine(ip string) StateMachine {
 	return StateMachine{
 		ip:       ip,
-		Store:    NewSyncMap[string, string](),
+		Store:    utils.NewSyncMap[string, string](),
 		leaderIP: "",
 		timeout:  rand.Int64N(TIME_RATE) + TIME_RATE,
 
@@ -52,19 +54,19 @@ func NewStateMachine(ip string) StateMachine {
 		logIndex:   -1,
 		votedFor:   "",
 		state:      FOLLOWER,
-		logEntries: []*pb.LogEntry{},
+		logEntries: []*raft_proto.LogEntry{},
 
 		// Volatile States
 		commitIndex: -1,
 		lastApplied: -1,
 
 		// Volatile Leader States
-		NextIndex:  NewSyncMap[string, int64](),
-		MatchIndex: NewSyncMap[string, int64](),
+		NextIndex:  utils.NewSyncMap[string, int64](),
+		MatchIndex: utils.NewSyncMap[string, int64](),
 	}
 }
 
-func (sm *StateMachine) LogAppend(log *pb.LogEntry) {
+func (sm *StateMachine) LogAppend(log *raft_proto.LogEntry) {
 	sm.mx.Lock()
 	defer sm.mx.Unlock()
 
@@ -72,7 +74,7 @@ func (sm *StateMachine) LogAppend(log *pb.LogEntry) {
 	sm.logIndex += 1
 }
 
-func (sm *StateMachine) LogAppendOrInsertAt(idx int64, log *pb.LogEntry) {
+func (sm *StateMachine) LogAppendOrInsertAt(idx int64, log *raft_proto.LogEntry) {
 	sm.mx.Lock()
 	defer sm.mx.Unlock()
 
@@ -189,7 +191,7 @@ func (sm *StateMachine) ToJSON() []byte {
 		VotedFor:    sm.votedFor,
 		State:       sm.state,
 		LogEntries:  sm.logEntries,
-		Store:       sm.Store.store,
+		Store:       sm.Store.DumpMap(),
 		CommitIndex: sm.commitIndex,
 		Timeout:     sm.timeout,
 	}
@@ -200,12 +202,12 @@ func (sm *StateMachine) ToJSON() []byte {
 }
 
 type StateMachineExport struct {
-	Term        int64             `json:"term"`
-	LogIndex    int64             `json:"log_index"`
-	State       NodeState         `json:"state"`
-	VotedFor    string            `json:"voted_for"`
-	CommitIndex int64             `json:"commit_index"`
-	LogEntries  []*pb.LogEntry    `json:"logs"`
-	Store       map[string]string `json:"store"`
-	Timeout     int64             `json:"timeout"`
+	Term        int64                  `json:"term"`
+	LogIndex    int64                  `json:"log_index"`
+	State       NodeState              `json:"state"`
+	VotedFor    string                 `json:"voted_for"`
+	CommitIndex int64                  `json:"commit_index"`
+	LogEntries  []*raft_proto.LogEntry `json:"logs"`
+	Store       map[string]string      `json:"store"`
+	Timeout     int64                  `json:"timeout"`
 }

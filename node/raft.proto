@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package raft;
 
-option go_package = "./raft_pb";
+option go_package = "./raft_proto";
 
 service RAFT {
   rpc RequestVote (VoteRequest) returns (VoteResponse) {}

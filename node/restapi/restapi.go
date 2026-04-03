@@ -1,10 +1,11 @@
-package main
+package restapi
 
 import (
 	"fmt"
 	"log"
 	"net/http"
-	pb "node/raft_pb"
+	"node/raft"
+	"node/raft_proto"
 	"os"
 	"time"
 )
@@ -12,13 +13,13 @@ import (
 type HTTPHandler struct {
 	ip    string
 	port  int
-	sm    *StateMachine
-	distr chan *pb.LogEntry
+	sm    *raft.StateMachine
+	distr chan *raft_proto.LogEntry
 
 	server *http.Server
 }
 
-func NewHTTPHandler(ip string, port int, sm *StateMachine, distr chan *pb.LogEntry) *HTTPHandler {
+func NewHTTPHandler(ip string, port int, sm *raft.StateMachine, distr chan *raft_proto.LogEntry) *HTTPHandler {
 	server := http.Server{
 		Addr:         fmt.Sprintf("%s:%d", ip, port),
 		Handler:      nil,
@@ -38,7 +39,7 @@ func NewHTTPHandler(ip string, port int, sm *StateMachine, distr chan *pb.LogEnt
 
 func (h *HTTPHandler) GetKeys(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(h.sm.Store.DumpMap())
+	w.Write(h.sm.Store.DumpMapJSON())
 }
 
 func (h *HTTPHandler) GetKey(w http.ResponseWriter, r *http.Request) {
@@ -67,7 +68,7 @@ func (h *HTTPHandler) SetKey(w http.ResponseWriter, r *http.Request) {
 
 	value := string(buffer[:n])
 
-	h.Distribute(pb.OP_SET, key, value)
+	h.Distribute(raft_proto.OP_SET, key, value)
 
 	fmt.Fprint(w, "Key set")
 }
@@ -75,7 +76,7 @@ func (h *HTTPHandler) SetKey(w http.ResponseWriter, r *http.Request) {
 func (h *HTTPHandler) DeleteKey(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Path[len("/keys/"):]
 
-	h.Distribute(pb.OP_DELETE, key, "")
+	h.Distribute(raft_proto.OP_DELETE, key, "")
 
 	fmt.Fprint(w, "Key deleted")
 }
@@ -85,9 +86,9 @@ func (h *HTTPHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	w.Write(h.sm.ToJSON())
 }
 
-func (h *HTTPHandler) Distribute(op pb.OP, key string, value string) {
+func (h *HTTPHandler) Distribute(op raft_proto.OP, key string, value string) {
 	go func() {
-		h.distr <- &pb.LogEntry{
+		h.distr <- &raft_proto.LogEntry{
 			Op:    op,
 			Key:   key,
 			Value: value,
@@ -97,7 +98,7 @@ func (h *HTTPHandler) Distribute(op pb.OP, key string, value string) {
 
 func (h *HTTPHandler) NonLeader(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if h.sm.GetState() == LEADER || len(r.URL.Path) < len("/keys") || r.URL.Path[:len("/keys")] != "/keys" {
+		if h.sm.GetState() == raft.LEADER || len(r.URL.Path) < len("/keys") || r.URL.Path[:len("/keys")] != "/keys" {
 			if r.URL.Path != "/status" {
 				log.Printf("Request: %s %s", r.Method, r.URL.Path)
 			}
