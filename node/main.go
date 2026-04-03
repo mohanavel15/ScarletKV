@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"node/raft"
+	"node/resp"
 	"node/restapi"
 	"os"
 	"os/signal"
@@ -37,6 +38,9 @@ func main() {
 
 	handler := restapi.NewHTTPHandler(ip, 80, &sm, raft.DistributorC)
 	man.addService("RestAPI", handler)
+
+	resp_ := resp.NewHandler(ip, 6379, &sm, raft.DistributorC)
+	man.addService("RESP", &resp_)
 
 	man.Start()
 
