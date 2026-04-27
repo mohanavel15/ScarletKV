@@ -37,86 +37,9 @@ func NewHTTPHandler(ip string, port int, sm *raft.StateMachine, distr chan *raft
 	}
 }
 
-func (h *HTTPHandler) GetKeys(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(h.sm.Store.DumpMapJSON())
-}
-
-func (h *HTTPHandler) GetKey(w http.ResponseWriter, r *http.Request) {
-	key := r.URL.Path[len("/keys/"):]
-
-	value, ok := h.sm.Store.Get(key)
-
-	if !ok {
-		http.Error(w, "Key not found", http.StatusNotFound)
-		return
-	}
-
-	fmt.Fprint(w, value)
-}
-
-func (h *HTTPHandler) SetKey(w http.ResponseWriter, r *http.Request) {
-	key := r.URL.Path[len("/keys/"):]
-
-	var buffer [1024]byte
-	n, err := r.Body.Read(buffer[:])
-
-	if err != nil && err.Error() != "EOF" {
-		http.Error(w, "Failed to read request body", http.StatusInternalServerError)
-		return
-	}
-
-	value := string(buffer[:n])
-
-	h.Distribute(raft_proto.OP_SET, key, value)
-
-	fmt.Fprint(w, "Key set")
-}
-
-func (h *HTTPHandler) DeleteKey(w http.ResponseWriter, r *http.Request) {
-	key := r.URL.Path[len("/keys/"):]
-
-	h.Distribute(raft_proto.OP_DELETE, key, "")
-
-	fmt.Fprint(w, "Key deleted")
-}
-
 func (h *HTTPHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(h.sm.ToJSON())
-}
-
-func (h *HTTPHandler) Distribute(op raft_proto.OP, key string, value string) {
-	go func() {
-		h.distr <- &raft_proto.LogEntry{
-			Op:    op,
-			Key:   key,
-			Value: value,
-		}
-	}()
-}
-
-func (h *HTTPHandler) NonLeader(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if h.sm.GetState() == raft.LEADER || len(r.URL.Path) < len("/keys") || r.URL.Path[:len("/keys")] != "/keys" {
-			if r.URL.Path != "/status" {
-				log.Printf("Request: %s %s", r.Method, r.URL.Path)
-			}
-
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		leaderIP := h.sm.GetLeader()
-
-		if leaderIP == "" {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
-		}
-
-		url := fmt.Sprintf("http://%s:%d%s", leaderIP, h.port, r.URL.Path)
-		http.Redirect(w, r, url, http.StatusPermanentRedirect)
-	})
 }
 
 func CORS(next http.Handler) http.Handler {
@@ -135,15 +58,6 @@ func CORS(next http.Handler) http.Handler {
 
 func (h *HTTPHandler) ListenAndServe() error {
 	handler := http.ServeMux{}
-
-	handler.HandleFunc("/keys", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			h.GetKeys(w, r)
-		default:
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		}
-	})
 
 	handler.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -165,20 +79,7 @@ func (h *HTTPHandler) ListenAndServe() error {
 		}
 	})
 
-	handler.HandleFunc("/keys/{key}", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			h.GetKey(w, r)
-		case http.MethodPost:
-			h.SetKey(w, r)
-		case http.MethodDelete:
-			h.DeleteKey(w, r)
-		default:
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		}
-	})
-
-	h.server.Handler = CORS(h.NonLeader(&handler))
+	h.server.Handler = CORS(&handler)
 	return h.server.ListenAndServe()
 }
 
