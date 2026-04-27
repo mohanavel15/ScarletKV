@@ -6,7 +6,7 @@ import (
 	"io"
 	"net"
 	"node/raft"
-	"node/raft_proto"
+	"node/ptypes"
 	"strings"
 )
 
@@ -19,10 +19,10 @@ type Handler struct {
 	port     int16
 	listener net.Listener
 	sm       *raft.StateMachine
-	distr    chan *raft_proto.LogEntry
+	distr    chan *ptypes.LogEntry
 }
 
-func NewHandler(ip string, port int16, sm *raft.StateMachine, distr chan *raft_proto.LogEntry) Handler {
+func NewHandler(ip string, port int16, sm *raft.StateMachine, distr chan *ptypes.LogEntry) Handler {
 	return Handler{
 		ip:    ip,
 		port:  port,
@@ -91,14 +91,12 @@ func (h *Handler) CommandHandler(value *Value) *Value {
 		}
 
 		key := value.Array[1].String
-		value := value.Array[2]
+		val := value.Array[2]
 
-		value_str, _ := Serialize(value)
-
-		h.distr <- &raft_proto.LogEntry{
-			Op:    raft_proto.OP_SET,
+		h.distr <- &ptypes.LogEntry{
+			Op:    ptypes.Op_SET,
 			Key:   key,
-			Value: value_str,
+			Value: RESP2ProtoVal(val),
 		}
 
 		return NewSimpleString("OK")
@@ -109,9 +107,39 @@ func (h *Handler) CommandHandler(value *Value) *Value {
 
 		key := value.Array[1].String
 
-		h.distr <- &raft_proto.LogEntry{
-			Op:  raft_proto.OP_DELETE,
+		h.distr <- &ptypes.LogEntry{
+			Op:  ptypes.Op_DELETE,
 			Key: key,
+		}
+
+		return NewSimpleString("OK")
+	case "INCRBY":
+		key := value.Array[1].String
+		val := value.Array[2]
+
+		if val.Type != Integer {
+			return NewError("Increament By offset should be a number!")
+		}
+
+		h.distr <- &ptypes.LogEntry{
+			Op:    ptypes.Op_INCRBY,
+			Key:   key,
+			Value: RESP2ProtoVal(val),
+		}
+
+		return NewSimpleString("OK")
+	case "DECRBY":
+		key := value.Array[1].String
+		val := value.Array[2]
+
+		if val.Type != Integer {
+			return NewError("Decreament By offset should be a number!")
+		}
+
+		h.distr <- &ptypes.LogEntry{
+			Op:    ptypes.Op_DECRBY,
+			Key:   key,
+			Value: RESP2ProtoVal(val),
 		}
 
 		return NewSimpleString("OK")

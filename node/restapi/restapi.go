@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 	"node/raft"
-	"node/raft_proto"
+	"node/ptypes"
 	"os"
 	"time"
 )
@@ -14,12 +14,12 @@ type HTTPHandler struct {
 	ip    string
 	port  int
 	sm    *raft.StateMachine
-	distr chan *raft_proto.LogEntry
+	distr chan *ptypes.LogEntry
 
 	server *http.Server
 }
 
-func NewHTTPHandler(ip string, port int, sm *raft.StateMachine, distr chan *raft_proto.LogEntry) *HTTPHandler {
+func NewHTTPHandler(ip string, port int, sm *raft.StateMachine, distr chan *ptypes.LogEntry) *HTTPHandler {
 	server := http.Server{
 		Addr:         fmt.Sprintf("%s:%d", ip, port),
 		Handler:      nil,

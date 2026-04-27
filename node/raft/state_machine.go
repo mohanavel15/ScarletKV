@@ -3,7 +3,7 @@ package raft
 import (
 	"encoding/json"
 	"math/rand/v2"
-	"node/raft_proto"
+	"node/ptypes"
 	"sync"
 
 	"node/utils"
@@ -31,7 +31,7 @@ type StateMachine struct {
 	logIndex   int64
 	votedFor   string
 	state      NodeState
-	logEntries []*raft_proto.LogEntry
+	logEntries []*ptypes.LogEntry
 
 	// Volatile States
 	commitIndex int64
@@ -54,7 +54,7 @@ func NewStateMachine(ip string) StateMachine {
 		logIndex:   -1,
 		votedFor:   "",
 		state:      FOLLOWER,
-		logEntries: []*raft_proto.LogEntry{},
+		logEntries: []*ptypes.LogEntry{},
 
 		// Volatile States
 		commitIndex: -1,
@@ -66,7 +66,7 @@ func NewStateMachine(ip string) StateMachine {
 	}
 }
 
-func (sm *StateMachine) LogAppend(log *raft_proto.LogEntry) {
+func (sm *StateMachine) LogAppend(log *ptypes.LogEntry) {
 	sm.mx.Lock()
 	defer sm.mx.Unlock()
 
@@ -74,7 +74,7 @@ func (sm *StateMachine) LogAppend(log *raft_proto.LogEntry) {
 	sm.logIndex += 1
 }
 
-func (sm *StateMachine) LogAppendOrInsertAt(idx int64, log *raft_proto.LogEntry) {
+func (sm *StateMachine) LogAppendOrInsertAt(idx int64, log *ptypes.LogEntry) {
 	sm.mx.Lock()
 	defer sm.mx.Unlock()
 
@@ -207,7 +207,7 @@ type StateMachineExport struct {
 	State       NodeState              `json:"state"`
 	VotedFor    string                 `json:"voted_for"`
 	CommitIndex int64                  `json:"commit_index"`
-	LogEntries  []*raft_proto.LogEntry `json:"logs"`
+	LogEntries  []*ptypes.LogEntry `json:"logs"`
 	Store       map[string]string      `json:"store"`
 	Timeout     int64                  `json:"timeout"`
 }

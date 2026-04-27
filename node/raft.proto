@@ -1,10 +1,10 @@
 syntax = "proto3";
 
-package raft;
+package ptypes;
 
-option go_package = "./raft_proto";
+option go_package = "./ptypes";
 
-service RAFT {
+service Raft {
   rpc RequestVote (VoteRequest) returns (VoteResponse) {}
   rpc AppendEntries (AppendRequest) returns (AppendResponse) {}
 }
@@ -35,14 +35,34 @@ message AppendResponse {
   bool success = 2;
 }
 
-enum OP {
+enum Op {
   SET = 0;
   DELETE = 2;
+  INCRBY = 3;
+  DECRBY = 4;
 }
 
 message LogEntry {
   int64 term = 1;
-  OP op = 2;
+  Op op = 2;
   string key = 3;
-  string value = 4;
+  Value value = 4;
+}
+
+message Value {
+  ValueType type = 1;
+  string string = 2;
+  int64 number = 3;
+  repeated Value array = 4;
+  bool isNull = 5;
+}
+
+enum ValueType {
+  String = 0;
+  Number = 1;
+  Array = 2;
+}
+
+message HashTable {
+  map<string, Value> data = 1;
 }

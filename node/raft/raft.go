@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"node/raft_proto"
+	"node/ptypes"
 	"sort"
 	"sync"
 	"time"
@@ -16,7 +16,7 @@ import (
 
 type Peer struct {
 	ip   string
-	c    raft_proto.RAFTClient
+	c    ptypes.RaftClient
 	conn *grpc.ClientConn
 }
 
@@ -30,13 +30,13 @@ func NewPeer(ip string, port int) *Peer {
 
 	return &Peer{
 		ip:   ip,
-		c:    raft_proto.NewRAFTClient(conn),
+		c:    ptypes.NewRaftClient(conn),
 		conn: conn,
 	}
 }
 
 type Raft struct {
-	raft_proto.UnimplementedRAFTServer
+	ptypes.UnimplementedRaftServer
 	ip    string
 	port  int
 	sm    *StateMachine
@@ -44,7 +44,7 @@ type Raft struct {
 	mx    sync.Mutex
 	peers map[string]*Peer
 
-	DistributorC chan *raft_proto.LogEntry
+	DistributorC chan *ptypes.LogEntry
 
 	server *grpc.Server
 }
@@ -63,7 +63,7 @@ func NewRaft(ip string, port int, sm *StateMachine, node_ips []string) *Raft {
 		sm:           sm,
 		timer:        nil,
 		peers:        peers,
-		DistributorC: make(chan *raft_proto.LogEntry, len(peers)),
+		DistributorC: make(chan *ptypes.LogEntry, len(peers)),
 		server:       grpc.NewServer(),
 	}
 }
@@ -121,7 +121,7 @@ func (r *Raft) StartLeaderElection() {
 				ctx, cancel := context.WithTimeout(context.Background(), time.Duration(TIME_RATE)*time.Millisecond)
 				defer cancel()
 
-				response, err := peer.c.RequestVote(ctx, &raft_proto.VoteRequest{
+				response, err := peer.c.RequestVote(ctx, &ptypes.VoteRequest{
 					Term:         current_term + 1,
 					CandidateId:  r.sm.GetId(),
 					LastLogIndex: r.sm.GetLogIndex(),
@@ -196,7 +196,7 @@ func (r *Raft) ReplicateLog() {
 				logs := r.sm.logEntries[nextIdx:] // Probably will trigger come race condition but will deal with it later.
 
 				ctx := context.Background()
-				response, err := peer.c.AppendEntries(ctx, &raft_proto.AppendRequest{
+				response, err := peer.c.AppendEntries(ctx, &ptypes.AppendRequest{
 					Term:         r.sm.GetTerm(),
 					LeaderId:     r.sm.GetId(),
 					PrevLogIndex: matchIdx, // Actully this is  problematic....
@@ -254,9 +254,9 @@ func (r *Raft) CheckAndCommit() {
 	}
 }
 
-func (r *Raft) RequestVote(ctx context.Context, req *raft_proto.VoteRequest) (*raft_proto.VoteResponse, error) {
+func (r *Raft) RequestVote(ctx context.Context, req *ptypes.VoteRequest) (*ptypes.VoteResponse, error) {
 	if req.Term <= r.sm.GetTerm() {
-		return &raft_proto.VoteResponse{
+		return &ptypes.VoteResponse{
 			Term:        r.sm.GetTerm(),
 			VoteGranted: false,
 		}, nil
@@ -264,7 +264,7 @@ func (r *Raft) RequestVote(ctx context.Context, req *raft_proto.VoteRequest) (*r
 
 	// Huhhhhhhhhhhhhhhhhhhhh
 	if r.sm.GetTerm() == req.Term && r.sm.GetVotedFor() != "" {
-		return &raft_proto.VoteResponse{
+		return &ptypes.VoteResponse{
 			Term:        r.sm.GetTerm(),
 			VoteGranted: false,
 		}, nil
@@ -273,7 +273,7 @@ func (r *Raft) RequestVote(ctx context.Context, req *raft_proto.VoteRequest) (*r
 	if req.LastLogIndex < r.sm.GetLogIndex() {
 		r.sm.SetTerm(req.Term, "")
 
-		return &raft_proto.VoteResponse{
+		return &ptypes.VoteResponse{
 			Term:        r.sm.GetTerm(),
 			VoteGranted: false,
 		}, nil
@@ -285,22 +285,22 @@ func (r *Raft) RequestVote(ctx context.Context, req *raft_proto.VoteRequest) (*r
 	r.sm.SetTerm(req.Term, req.CandidateId)
 	r.sm.SetState(FOLLOWER)
 
-	return &raft_proto.VoteResponse{
+	return &ptypes.VoteResponse{
 		Term:        r.sm.GetTerm(),
 		VoteGranted: true,
 	}, nil
 }
 
-func (r *Raft) AppendEntries(ctx context.Context, req *raft_proto.AppendRequest) (*raft_proto.AppendResponse, error) {
+func (r *Raft) AppendEntries(ctx context.Context, req *ptypes.AppendRequest) (*ptypes.AppendResponse, error) {
 	r.ResetTimer()
 
 	if req.Term < r.sm.GetTerm() {
-		return &raft_proto.AppendResponse{
+		return &ptypes.AppendResponse{
 			Term:    r.sm.GetTerm(),
 			Success: false,
 		}, nil
 	} else if req.Term == r.sm.GetTerm() && r.sm.GetState() == LEADER {
-		return &raft_proto.AppendResponse{
+		return &ptypes.AppendResponse{
 			Term:    r.sm.GetTerm(),
 			Success: false,
 		}, nil
@@ -315,7 +315,7 @@ func (r *Raft) AppendEntries(ctx context.Context, req *raft_proto.AppendRequest)
 	}
 
 	if req.GetPrevLogIndex() > r.sm.GetLogIndex() {
-		return &raft_proto.AppendResponse{
+		return &ptypes.AppendResponse{
 			Term:    r.sm.GetTerm(),
 			Success: false,
 		}, nil
@@ -331,12 +331,13 @@ func (r *Raft) AppendEntries(ctx context.Context, req *raft_proto.AppendRequest)
 		r.Commit(req.LeaderCommit)
 	}
 
-	return &raft_proto.AppendResponse{
+	return &ptypes.AppendResponse{
 		Term:    r.sm.GetTerm(),
 		Success: true,
 	}, nil
 }
 
+// TODO: This whole should do it inside a lock.
 func (r *Raft) Commit(logIdx int64) {
 	commitIdx := r.sm.GetCommitIndex()
 
@@ -348,9 +349,9 @@ func (r *Raft) Commit(logIdx int64) {
 		logEntry := r.sm.logEntries[i]
 
 		switch logEntry.Op {
-		case raft_proto.OP_SET:
+		case ptypes.Op_SET:
 			r.sm.Store.Set(logEntry.Key, logEntry.Value)
-		case raft_proto.OP_DELETE:
+		case ptypes.Op_DELETE:
 			r.sm.Store.Delete(logEntry.Key)
 		}
 	}
@@ -364,7 +365,7 @@ func (r *Raft) ListenAndServe() error {
 		return fmt.Errorf("failed to listen: %v", err)
 	}
 
-	raft_proto.RegisterRAFTServer(r.server, r)
+	ptypes.RegisterRaftServer(r.server, r)
 
 	errChan := make(chan error)
 
