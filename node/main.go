@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net"
+	"node/db"
 	"node/raft"
 	"node/resp"
 	"node/restapi"
@@ -29,17 +30,19 @@ func main() {
 		node_ips = append(node_ips, k)
 	}
 
+	s := db.NewStore()
+
 	sm := raft.NewStateMachine(ip)
 
 	man := NewServiceManager()
 
-	raft := raft.NewRaft(ip, 6000, &sm, node_ips)
+	raft := raft.NewRaft(ip, 6000, &sm, node_ips, s.Commit)
 	man.addService("Raft", raft)
 
 	handler := restapi.NewHTTPHandler(ip, 80, &sm, raft.DistributorC)
 	man.addService("RestAPI", handler)
 
-	resp_ := resp.NewHandler(ip, 6379, &sm, raft.DistributorC)
+	resp_ := resp.NewHandler(ip, 6379, &sm, raft.DistributorC, s.Get)
 	man.addService("RESP", &resp_)
 
 	man.Start()

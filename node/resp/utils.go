@@ -25,3 +25,24 @@ func RESP2ProtoVal(value *Value) *ptypes.Value {
 
 	return &pval
 }
+
+func ProtoVal2RESP(value *ptypes.Value) *Value {
+	new_value := Value{}
+	new_value.IsNull = value.IsNull
+
+	switch value.Type {
+	case ptypes.ValueType_Array:
+		new_value.Type = Array
+		for _, v := range value.Array {
+			new_value.Array = append(new_value.Array, ProtoVal2RESP(v))
+		}
+	case ptypes.ValueType_String:
+		new_value.Type = BulkString
+		new_value.String = value.String_
+	case ptypes.ValueType_Number:
+		new_value.Type = Integer
+		new_value.Integer = value.Number
+	}
+
+	return &new_value
+}

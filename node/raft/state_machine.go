@@ -1,7 +1,6 @@
 package raft
 
 import (
-	"encoding/json"
 	"math/rand/v2"
 	"node/ptypes"
 	"sync"
@@ -21,7 +20,6 @@ const (
 
 type StateMachine struct {
 	ip       string
-	Store    utils.SyncMap[string, string]
 	mx       sync.RWMutex
 	timeout  int64
 	leaderIP string
@@ -44,8 +42,8 @@ type StateMachine struct {
 
 func NewStateMachine(ip string) StateMachine {
 	return StateMachine{
-		ip:       ip,
-		Store:    utils.NewSyncMap[string, string](),
+		ip: ip,
+		// Store:    utils.NewSyncMap[string, string](),
 		leaderIP: "",
 		timeout:  rand.Int64N(TIME_RATE) + TIME_RATE,
 
@@ -179,35 +177,4 @@ func (sm *StateMachine) SetCommitIndex(idx int64) {
 	defer sm.mx.Unlock()
 
 	sm.commitIndex = idx
-}
-
-func (sm *StateMachine) ToJSON() []byte {
-	sm.mx.RLock()
-	defer sm.mx.RUnlock()
-
-	sme := StateMachineExport{
-		Term:        sm.term,
-		LogIndex:    sm.logIndex,
-		VotedFor:    sm.votedFor,
-		State:       sm.state,
-		LogEntries:  sm.logEntries,
-		Store:       sm.Store.DumpMap(),
-		CommitIndex: sm.commitIndex,
-		Timeout:     sm.timeout,
-	}
-
-	data, _ := json.Marshal(sme)
-
-	return data
-}
-
-type StateMachineExport struct {
-	Term        int64                  `json:"term"`
-	LogIndex    int64                  `json:"log_index"`
-	State       NodeState              `json:"state"`
-	VotedFor    string                 `json:"voted_for"`
-	CommitIndex int64                  `json:"commit_index"`
-	LogEntries  []*ptypes.LogEntry `json:"logs"`
-	Store       map[string]string      `json:"store"`
-	Timeout     int64                  `json:"timeout"`
 }

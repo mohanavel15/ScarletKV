@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"node/raft"
 	"node/ptypes"
+	"node/raft"
 	"os"
 	"time"
 )
@@ -37,10 +37,10 @@ func NewHTTPHandler(ip string, port int, sm *raft.StateMachine, distr chan *ptyp
 	}
 }
 
-func (h *HTTPHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(h.sm.ToJSON())
-}
+// func (h *HTTPHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
+// 	w.Header().Set("Content-Type", "application/json")
+// 	w.Write(h.sm.ToJSON())
+// }
 
 func CORS(next http.Handler) http.Handler {
 	// This func from: https://www.stackhawk.com/blog/golang-cors-guide-what-it-is-and-how-to-enable-it/
@@ -61,8 +61,8 @@ func (h *HTTPHandler) ListenAndServe() error {
 
 	handler.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
-		case http.MethodGet:
-			h.GetStatus(w, r)
+		// case http.MethodGet:
+		// 	h.GetStatus(w, r)
 		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}

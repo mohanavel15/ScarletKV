@@ -5,9 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"node/raft"
 	"node/ptypes"
-	"strings"
+	"node/raft"
 )
 
 func IsString(value *Value) bool {
@@ -19,15 +18,17 @@ type Handler struct {
 	port     int16
 	listener net.Listener
 	sm       *raft.StateMachine
+	getFunc  func(string) (*ptypes.Value, bool)
 	distr    chan *ptypes.LogEntry
 }
 
-func NewHandler(ip string, port int16, sm *raft.StateMachine, distr chan *ptypes.LogEntry) Handler {
+func NewHandler(ip string, port int16, sm *raft.StateMachine, distr chan *ptypes.LogEntry, getFunc func(string) (*ptypes.Value, bool)) Handler {
 	return Handler{
-		ip:    ip,
-		port:  port,
-		sm:    sm,
-		distr: distr,
+		ip:      ip,
+		port:    port,
+		sm:      sm,
+		distr:   distr,
+		getFunc: getFunc,
 	}
 }
 
@@ -74,17 +75,12 @@ func (h *Handler) CommandHandler(value *Value) *Value {
 
 		key := value.Array[1].String
 
-		value_str, ok := h.sm.Store.Get(key)
+		value, ok := h.getFunc(key)
 		if !ok {
 			return NewError("Key Not Found")
 		}
 
-		value, err := Deserilize(strings.NewReader(value_str))
-		if err != nil {
-			return NewError("Internal Server Error")
-		}
-
-		return value
+		return ProtoVal2RESP(value)
 	case "SET":
 		if len(value.Array) != 3 || !IsString(value.Array[1]) {
 			return NewError("Invaild RESP Command!")

@@ -35,21 +35,42 @@ func NewPeer(ip string, port int) *Peer {
 	}
 }
 
+// type Peers struct {
+// 	peers map[string]*Peer
+// }
+
+// func NewPeers(ips []string, port int) Peers {
+// 	peers := map[string]*Peer{}
+
+// 	for _, ip := range ips {
+// 		peer := NewPeer(ip, port)
+// 		peers[ip] = peer
+// 	}
+
+// 	return Peers{
+// 		peers: peers,
+// 	}
+// }
+
+// func (p *Peers) Boardcast(fn func(*Peer)) {
+
+// }
+
 type Raft struct {
 	ptypes.UnimplementedRaftServer
 	ip    string
 	port  int
 	sm    *StateMachine
 	timer *time.Timer
-	mx    sync.Mutex
 	peers map[string]*Peer
 
 	DistributorC chan *ptypes.LogEntry
+	onCommit     func(*ptypes.LogEntry) bool
 
 	server *grpc.Server
 }
 
-func NewRaft(ip string, port int, sm *StateMachine, node_ips []string) *Raft {
+func NewRaft(ip string, port int, sm *StateMachine, node_ips []string, onCommit func(*ptypes.LogEntry) bool) *Raft {
 	peers := map[string]*Peer{}
 
 	for _, peer_ip := range node_ips {
@@ -64,14 +85,12 @@ func NewRaft(ip string, port int, sm *StateMachine, node_ips []string) *Raft {
 		timer:        nil,
 		peers:        peers,
 		DistributorC: make(chan *ptypes.LogEntry, len(peers)),
+		onCommit:     onCommit,
 		server:       grpc.NewServer(),
 	}
 }
 
 func (r *Raft) ResetTimer() {
-	r.mx.Lock()
-	defer r.mx.Unlock()
-
 	r.timer.Reset(time.Duration(r.sm.timeout) * time.Millisecond)
 }
 
@@ -347,12 +366,9 @@ func (r *Raft) Commit(logIdx int64) {
 
 	for i := commitIdx + 1; i < logIdx+1; i++ {
 		logEntry := r.sm.logEntries[i]
-
-		switch logEntry.Op {
-		case ptypes.Op_SET:
-			r.sm.Store.Set(logEntry.Key, logEntry.Value)
-		case ptypes.Op_DELETE:
-			r.sm.Store.Delete(logEntry.Key)
+		if !r.onCommit(logEntry) {
+			r.sm.SetCommitIndex(i - 1) // Assuming previous one is success.
+			break
 		}
 	}
 
