@@ -19,7 +19,7 @@ type HTTPHandler struct {
 	server *http.Server
 }
 
-func NewHTTPHandler(ip string, port int, sm *raft.StateMachine, distr chan *ptypes.LogEntry) *HTTPHandler {
+func NewHTTPHandler(ip string, port int) *HTTPHandler {
 	server := http.Server{
 		Addr:         fmt.Sprintf("%s:%d", ip, port),
 		Handler:      nil,
@@ -31,8 +31,6 @@ func NewHTTPHandler(ip string, port int, sm *raft.StateMachine, distr chan *ptyp
 	return &HTTPHandler{
 		ip:     ip,
 		port:   port,
-		sm:     sm,
-		distr:  distr,
 		server: &server,
 	}
 }

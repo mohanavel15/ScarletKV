@@ -39,7 +39,7 @@ func main() {
 	raft := raft.NewRaft(ip, 6000, &sm, node_ips, s.Commit)
 	man.addService("Raft", raft)
 
-	handler := restapi.NewHTTPHandler(ip, 80, &sm, raft.DistributorC)
+	handler := restapi.NewHTTPHandler(ip, 80)
 	man.addService("RestAPI", handler)
 
 	resp_ := resp.NewHandler(ip, 6379, &sm, raft.DistributorC, s.Get)

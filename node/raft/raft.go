@@ -64,8 +64,10 @@ type Raft struct {
 	timer *time.Timer
 	peers map[string]*Peer
 
-	DistributorC chan *ptypes.LogEntry
+	DistributorC chan *Message
 	onCommit     func(*ptypes.LogEntry) bool
+
+	pendingMsgs map[int64]chan bool
 
 	server *grpc.Server
 }
@@ -84,7 +86,8 @@ func NewRaft(ip string, port int, sm *StateMachine, node_ips []string, onCommit 
 		sm:           sm,
 		timer:        nil,
 		peers:        peers,
-		DistributorC: make(chan *ptypes.LogEntry, len(peers)),
+		DistributorC: make(chan *Message),
+		pendingMsgs:  make(map[int64]chan bool),
 		onCommit:     onCommit,
 		server:       grpc.NewServer(),
 	}
@@ -184,12 +187,15 @@ func (r *Raft) StartLeaderElection() {
 }
 
 func (r *Raft) DistributeLogEntry() {
-	for logEntry := range r.DistributorC {
+	for msg := range r.DistributorC {
 		if r.sm.GetState() != LEADER {
+			msg.success <- false
+			close(msg.success)
 			continue
 		}
 
-		r.sm.LogAppend(logEntry)
+		idx := r.sm.LogAppend(msg.log)
+		r.pendingMsgs[idx] = msg.success
 		fmt.Println("Distributing logs.........")
 		r.ReplicateLog()
 	}
@@ -366,13 +372,21 @@ func (r *Raft) Commit(logIdx int64) {
 
 	for i := commitIdx + 1; i < logIdx+1; i++ {
 		logEntry := r.sm.logEntries[i]
-		if !r.onCommit(logEntry) {
-			r.sm.SetCommitIndex(i - 1) // Assuming previous one is success.
+		if time.Now().UnixMilli() > logEntry.Deadline {
+			close(r.pendingMsgs[i])
+			delete(r.pendingMsgs, i)
+		} else if r.onCommit(logEntry) {
+			if _, ok := r.pendingMsgs[i]; ok {
+				r.pendingMsgs[i] <- true
+				close(r.pendingMsgs[i])
+				delete(r.pendingMsgs, i)
+			}
+		} else {
 			break
 		}
-	}
 
-	r.sm.SetCommitIndex(logIdx)
+		r.sm.SetCommitIndex(logIdx)
+	}
 }
 
 func (r *Raft) ListenAndServe() error {
@@ -409,4 +423,37 @@ func (r *Raft) Close() {
 	}
 
 	r.server.GracefulStop()
+}
+
+type Message struct {
+	log         *ptypes.LogEntry
+	success     chan bool
+	hasTimedOut bool
+
+	mx sync.Mutex
+}
+
+func NewMessage(op ptypes.Op, key string, val *ptypes.Value) *Message {
+	return &Message{
+		log: &ptypes.LogEntry{
+			Op:       op,
+			Key:      key,
+			Value:    val,
+			Deadline: time.Now().Add(10 * time.Second).UnixMilli(), // Wait for 10 seconds
+		},
+		success:     make(chan bool, 1),
+		hasTimedOut: false,
+	}
+}
+
+func (m *Message) WaitForConfirmation() bool {
+	timer := time.NewTimer(time.Duration(m.log.Deadline-time.Now().UnixMilli()) * time.Millisecond)
+	defer timer.Stop()
+
+	select {
+	case val := <-m.success:
+		return val
+	case <-timer.C:
+		return false
+	}
 }

@@ -64,12 +64,14 @@ func NewStateMachine(ip string) StateMachine {
 	}
 }
 
-func (sm *StateMachine) LogAppend(log *ptypes.LogEntry) {
+func (sm *StateMachine) LogAppend(log *ptypes.LogEntry) int64 {
 	sm.mx.Lock()
 	defer sm.mx.Unlock()
 
 	sm.logEntries = append(sm.logEntries, log)
 	sm.logIndex += 1
+
+	return sm.logIndex
 }
 
 func (sm *StateMachine) LogAppendOrInsertAt(idx int64, log *ptypes.LogEntry) {

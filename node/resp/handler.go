@@ -7,6 +7,7 @@ import (
 	"net"
 	"node/ptypes"
 	"node/raft"
+	"strconv"
 )
 
 func IsString(value *Value) bool {
@@ -19,10 +20,12 @@ type Handler struct {
 	listener net.Listener
 	sm       *raft.StateMachine
 	getFunc  func(string) (*ptypes.Value, bool)
-	distr    chan *ptypes.LogEntry
+	distr    chan *raft.Message
+
+	cmdRegister map[string]func(*Value) *Value
 }
 
-func NewHandler(ip string, port int16, sm *raft.StateMachine, distr chan *ptypes.LogEntry, getFunc func(string) (*ptypes.Value, bool)) Handler {
+func NewHandler(ip string, port int16, sm *raft.StateMachine, distr chan *raft.Message, getFunc func(string) (*ptypes.Value, bool)) Handler {
 	return Handler{
 		ip:      ip,
 		port:    port,
@@ -33,6 +36,8 @@ func NewHandler(ip string, port int16, sm *raft.StateMachine, distr chan *ptypes
 }
 
 func (h *Handler) handleConnection(conn net.Conn) {
+	defer conn.Close()
+
 	for {
 		value, err := Deserilize(conn)
 		if errors.Is(err, io.EOF) {
@@ -89,13 +94,15 @@ func (h *Handler) CommandHandler(value *Value) *Value {
 		key := value.Array[1].String
 		val := value.Array[2]
 
-		h.distr <- &ptypes.LogEntry{
-			Op:    ptypes.Op_SET,
-			Key:   key,
-			Value: RESP2ProtoVal(val),
+		msg := raft.NewMessage(ptypes.Op_SET, key, RESP2ProtoVal(val))
+		h.distr <- msg
+
+		if msg.WaitForConfirmation() {
+			return NewSimpleString("OK")
+		} else {
+			return NewError("Something went wrong, try again...")
 		}
 
-		return NewSimpleString("OK")
 	case "DEL":
 		if len(value.Array) != 2 || !IsString(value.Array[1]) {
 			return NewError("Invaild RESP Command!")
@@ -103,42 +110,65 @@ func (h *Handler) CommandHandler(value *Value) *Value {
 
 		key := value.Array[1].String
 
-		h.distr <- &ptypes.LogEntry{
-			Op:  ptypes.Op_DELETE,
-			Key: key,
-		}
+		msg := raft.NewMessage(ptypes.Op_DELETE, key, nil)
 
-		return NewSimpleString("OK")
+		h.distr <- msg
+
+		if msg.WaitForConfirmation() {
+			return NewSimpleString("OK")
+		} else {
+			return NewError("Something went wrong, try again...")
+		}
 	case "INCRBY":
 		key := value.Array[1].String
 		val := value.Array[2]
 
-		if val.Type != Integer {
+		if val.Type != Integer && val.Type != BulkString && val.Type != SimpleString {
 			return NewError("Increament By offset should be a number!")
+		} else if val.Type == BulkString || val.Type == SimpleString {
+			nint, err := strconv.ParseInt(val.String, 10, 64)
+			if err != nil {
+				return NewError("Increament By offset should be a number!")
+			}
+
+			val.String = ""
+			val.Integer = nint
+			val.Type = Integer
 		}
 
-		h.distr <- &ptypes.LogEntry{
-			Op:    ptypes.Op_INCRBY,
-			Key:   key,
-			Value: RESP2ProtoVal(val),
-		}
+		msg := raft.NewMessage(ptypes.Op_INCRBY, key, RESP2ProtoVal(val))
+		h.distr <- msg
 
-		return NewSimpleString("OK")
+		if msg.WaitForConfirmation() {
+			return NewSimpleString("OK")
+		} else {
+			return NewError("Something went wrong, try again...")
+		}
 	case "DECRBY":
 		key := value.Array[1].String
 		val := value.Array[2]
 
-		if val.Type != Integer {
+		if val.Type != Integer && val.Type != BulkString && val.Type != SimpleString {
 			return NewError("Decreament By offset should be a number!")
+		} else if val.Type == BulkString || val.Type == SimpleString {
+			nint, err := strconv.ParseInt(val.String, 10, 64)
+			if err != nil {
+				return NewError("Decreament By offset should be a number!")
+			}
+
+			val.String = ""
+			val.Integer = nint
+			val.Type = Integer
 		}
 
-		h.distr <- &ptypes.LogEntry{
-			Op:    ptypes.Op_DECRBY,
-			Key:   key,
-			Value: RESP2ProtoVal(val),
-		}
+		msg := raft.NewMessage(ptypes.Op_DECRBY, key, RESP2ProtoVal(val))
+		h.distr <- msg
 
-		return NewSimpleString("OK")
+		if msg.WaitForConfirmation() {
+			return NewSimpleString("OK")
+		} else {
+			return NewError("Something went wrong, try again...")
+		}
 	default:
 		msg, _ := Serialize(value)
 		fmt.Println("================Unknown RESP Cmd================")
