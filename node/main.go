@@ -42,8 +42,8 @@ func main() {
 	handler := restapi.NewHTTPHandler(ip, 80)
 	man.addService("RestAPI", handler)
 
-	resp_ := resp.NewHandler(ip, 6379, &sm, raft.DistributorC, s.Get)
-	man.addService("RESP", &resp_)
+	resp_ := resp.NewHandler(ip, 6379)
+	man.addService("RESP", resp_)
 
 	man.Start()
 

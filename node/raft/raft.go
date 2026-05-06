@@ -93,6 +93,11 @@ func NewRaft(ip string, port int, sm *StateMachine, node_ips []string, onCommit 
 	}
 }
 
+// TEMP FIX for now....
+func (r *Raft) SM() *StateMachine {
+	return r.sm
+}
+
 func (r *Raft) ResetTimer() {
 	r.timer.Reset(time.Duration(r.sm.timeout) * time.Millisecond)
 }

@@ -47,6 +47,7 @@ message LogEntry {
   Op op = 2;
   string key = 3;
   Value value = 4;
+  int64 deadline = 5;
 }
 
 message Value {
