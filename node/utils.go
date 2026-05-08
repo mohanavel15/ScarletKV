@@ -15,8 +15,7 @@ func RESP2ProtoVal(value *resp.Value) *ptypes.Value {
 		for _, v := range value.Array {
 			pval.Array = append(pval.Array, RESP2ProtoVal(v))
 		}
-	case resp.SimpleString:
-	case resp.BulkString:
+	case resp.SimpleString, resp.BulkString:
 		pval.Type = ptypes.ValueType_String
 		pval.String_ = value.String
 	case resp.Integer:

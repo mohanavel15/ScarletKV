@@ -19,7 +19,7 @@ type Handler struct {
 	listener    net.Listener
 	Middleware  *utils.Middleware[*Value]
 	cmdRegister map[string]func(*Value) *Value
-	mx          *sync.RWMutex
+	mx          sync.RWMutex
 }
 
 func NewHandler(ip string, port int16) *Handler {

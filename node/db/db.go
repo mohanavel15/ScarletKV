@@ -11,8 +11,8 @@ type Store struct {
 	mx    sync.RWMutex
 }
 
-func NewStore() Store {
-	return Store{
+func NewStore() *Store {
+	return &Store{
 		store: ptypes.HashTable{
 			Data: make(map[string]*ptypes.Value),
 		},
@@ -36,8 +36,7 @@ func (s *Store) Commit(log *ptypes.LogEntry) bool {
 		s.store.Data[log.Key] = log.Value
 	case ptypes.Op_DELETE:
 		delete(s.store.Data, log.Key)
-	case ptypes.Op_INCRBY:
-	case ptypes.Op_DECRBY:
+	case ptypes.Op_INCRBY, ptypes.Op_DECRBY:
 		if _, ok := s.store.Data[log.Key]; !ok {
 			s.store.Data[log.Key] = &ptypes.Value{
 				Type:   ptypes.ValueType_Number,
