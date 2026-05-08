@@ -72,13 +72,15 @@ type Raft struct {
 	server *grpc.Server
 }
 
-func NewRaft(ip string, port int, sm *StateMachine, node_ips []string, onCommit func(*ptypes.LogEntry) bool) *Raft {
+func NewRaft(ip string, port int, node_ips []string, onCommit func(*ptypes.LogEntry) bool) *Raft {
 	peers := map[string]*Peer{}
 
 	for _, peer_ip := range node_ips {
 		peer := NewPeer(peer_ip, port)
 		peers[peer_ip] = peer
 	}
+
+	sm := NewStateMachine(ip)
 
 	return &Raft{
 		ip:           ip,

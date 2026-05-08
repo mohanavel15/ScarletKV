@@ -15,7 +15,12 @@ type Scarlet struct {
 	resp  *resp.Handler
 }
 
-func NewScarlet(store *db.Store, raft *raft.Raft, resp *resp.Handler) *Scarlet {
+func NewScarlet(ip string, node_ips []string) *Scarlet {
+	store := db.NewStore()
+
+	raft := raft.NewRaft(ip, 6000, node_ips, store.Commit)
+	resp := resp.NewHandler(ip, 6379)
+
 	s := Scarlet{
 		store: store,
 		raft:  raft,
@@ -132,4 +137,14 @@ func (s *Scarlet) ChanageBy(value *resp.Value) *resp.Value {
 	} else {
 		return resp.NewError("Something went wrong, try again...")
 	}
+}
+
+func (s *Scarlet) Start() {
+	go s.raft.ListenAndServe()
+	go s.resp.ListenAndServe()
+}
+
+func (s *Scarlet) Stop() {
+	s.raft.Close()
+	s.resp.Close()
 }

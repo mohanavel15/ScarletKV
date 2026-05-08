@@ -4,10 +4,6 @@ import (
 	"context"
 	"log"
 	"net"
-	"node/db"
-	"node/raft"
-	"node/resp"
-	"node/restapi"
 	"os"
 	"os/signal"
 	"syscall"
@@ -30,28 +26,14 @@ func main() {
 		node_ips = append(node_ips, k)
 	}
 
-	s := db.NewStore()
-
-	sm := raft.NewStateMachine(ip)
-
-	man := NewServiceManager()
-
-	raft := raft.NewRaft(ip, 6000, &sm, node_ips, s.Commit)
-	man.addService("Raft", raft)
-
-	handler := restapi.NewHTTPHandler(ip, 80)
-	man.addService("RestAPI", handler)
-
-	resp_ := resp.NewHandler(ip, 6379)
-	man.addService("RESP", resp_)
-
-	man.Start()
+	scarlet := NewScarlet(ip, node_ips)
+	scarlet.Start()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop() // Realistically Never Runs. Or Does it? IDK.
 
 	<-ctx.Done()
-	man.Stop()
+	scarlet.Stop()
 }
 
 func PrintStartUpInfo() string {

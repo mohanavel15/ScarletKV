@@ -40,10 +40,9 @@ type StateMachine struct {
 	MatchIndex utils.SyncMap[string, int64]
 }
 
-func NewStateMachine(ip string) StateMachine {
-	return StateMachine{
+func NewStateMachine(ip string) *StateMachine {
+	return &StateMachine{
 		ip: ip,
-		// Store:    utils.NewSyncMap[string, string](),
 		leaderIP: "",
 		timeout:  rand.Int64N(TIME_RATE) + TIME_RATE,
 
