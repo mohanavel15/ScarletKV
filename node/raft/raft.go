@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"node/ptypes"
+	"node/utils"
 	"sort"
 	"sync"
 	"time"
@@ -67,9 +68,10 @@ type Raft struct {
 	DistributorC chan *Message
 	onCommit     func(*ptypes.LogEntry) bool
 
-	pendingMsgs map[int64]chan bool
-
+	pendingMsgs utils.SyncMap[int64, chan bool]
 	server *grpc.Server
+
+	mx sync.Mutex
 }
 
 func NewRaft(ip string, port int, node_ips []string, onCommit func(*ptypes.LogEntry) bool) *Raft {
@@ -89,7 +91,7 @@ func NewRaft(ip string, port int, node_ips []string, onCommit func(*ptypes.LogEn
 		timer:        nil,
 		peers:        peers,
 		DistributorC: make(chan *Message),
-		pendingMsgs:  make(map[int64]chan bool),
+		pendingMsgs:  utils.NewSyncMap[int64, chan bool](),
 		onCommit:     onCommit,
 		server:       grpc.NewServer(),
 	}
@@ -101,6 +103,9 @@ func (r *Raft) SM() *StateMachine {
 }
 
 func (r *Raft) ResetTimer() {
+	r.mx.Lock()
+	defer r.mx.Unlock()
+
 	r.timer.Reset(time.Duration(r.sm.timeout) * time.Millisecond)
 }
 
@@ -202,7 +207,7 @@ func (r *Raft) DistributeLogEntry() {
 		}
 
 		idx := r.sm.LogAppend(msg.log)
-		r.pendingMsgs[idx] = msg.success
+		r.pendingMsgs.Set(idx, msg.success)
 		fmt.Println("Distributing logs.........")
 		r.ReplicateLog()
 	}
@@ -371,6 +376,9 @@ func (r *Raft) AppendEntries(ctx context.Context, req *ptypes.AppendRequest) (*p
 
 // TODO: This whole should do it inside a lock.
 func (r *Raft) Commit(logIdx int64) {
+	r.mx.Lock()
+	defer r.mx.Unlock()
+
 	commitIdx := r.sm.GetCommitIndex()
 
 	if logIdx <= commitIdx {
@@ -380,13 +388,15 @@ func (r *Raft) Commit(logIdx int64) {
 	for i := commitIdx + 1; i < logIdx+1; i++ {
 		logEntry := r.sm.logEntries[i]
 		if time.Now().UnixMilli() > logEntry.Deadline {
-			close(r.pendingMsgs[i])
-			delete(r.pendingMsgs, i)
+			if ch, ok := r.pendingMsgs.Get(i); ok {
+				close(ch)
+				r.pendingMsgs.Delete(i)
+			}
 		} else if r.onCommit(logEntry) {
-			if _, ok := r.pendingMsgs[i]; ok {
-				r.pendingMsgs[i] <- true
-				close(r.pendingMsgs[i])
-				delete(r.pendingMsgs, i)
+			if ch, ok := r.pendingMsgs.Get(i); ok {
+				ch <- true
+				close(ch)
+				r.pendingMsgs.Delete(i)
 			}
 		} else {
 			break
@@ -413,8 +423,10 @@ func (r *Raft) ListenAndServe() error {
 
 	time.Sleep(time.Duration(TIME_RATE*2) * time.Millisecond)
 
+	r.mx.Lock()
 	timer := time.NewTimer(time.Duration(r.sm.timeout) * time.Millisecond)
 	r.timer = timer
+	r.mx.Unlock()
 
 	go r.HandleTimeout()
 
