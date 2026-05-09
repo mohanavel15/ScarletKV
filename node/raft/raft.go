@@ -36,26 +36,56 @@ func NewPeer(ip string, port int) *Peer {
 	}
 }
 
-// type Peers struct {
-// 	peers map[string]*Peer
-// }
+type Peers struct {
+	ips   []string
+	port  int
+	peers map[string]*Peer
+	len   int
+	mx    sync.RWMutex
+}
 
-// func NewPeers(ips []string, port int) Peers {
-// 	peers := map[string]*Peer{}
+func NewPeers(ips []string, port int) *Peers {
+	peers := map[string]*Peer{}
 
-// 	for _, ip := range ips {
-// 		peer := NewPeer(ip, port)
-// 		peers[ip] = peer
-// 	}
+	for _, ip := range ips {
+		peer := NewPeer(ip, port)
+		peers[ip] = peer
+	}
 
-// 	return Peers{
-// 		peers: peers,
-// 	}
-// }
+	return &Peers{
+		ips:   ips,
+		port:  port,
+		peers: peers,
+		len:   len(ips),
+	}
+}
 
-// func (p *Peers) Boardcast(fn func(*Peer)) {
+func (p *Peers) Boardcast(fn func(*Peer)) {
+	p.mx.RLock()
+	defer p.mx.RUnlock()
 
-// }
+	wg := sync.WaitGroup{}
+	for _, peer := range p.peers {
+		wg.Add(1)
+		go func() {
+			fn(peer)
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+}
+
+func (p *Peers) Close() {
+	p.mx.Lock()
+	defer p.mx.Unlock()
+
+	for _, peer := range p.peers {
+		err := peer.conn.Close()
+		if err != nil {
+			log.Printf("Error closing connection %s: %v\n", peer.ip, err)
+		}
+	}
+}
 
 type Raft struct {
 	ptypes.UnimplementedRaftServer
@@ -63,25 +93,18 @@ type Raft struct {
 	port  int
 	sm    *StateMachine
 	timer *time.Timer
-	peers map[string]*Peer
+	peers *Peers
 
 	DistributorC chan *Message
 	onCommit     func(*ptypes.LogEntry) bool
 
 	pendingMsgs utils.SyncMap[int64, chan bool]
-	server *grpc.Server
+	server      *grpc.Server
 
 	mx sync.Mutex
 }
 
 func NewRaft(ip string, port int, node_ips []string, onCommit func(*ptypes.LogEntry) bool) *Raft {
-	peers := map[string]*Peer{}
-
-	for _, peer_ip := range node_ips {
-		peer := NewPeer(peer_ip, port)
-		peers[peer_ip] = peer
-	}
-
 	sm := NewStateMachine(ip)
 
 	return &Raft{
@@ -89,7 +112,7 @@ func NewRaft(ip string, port int, node_ips []string, onCommit func(*ptypes.LogEn
 		port:         port,
 		sm:           sm,
 		timer:        nil,
-		peers:        peers,
+		peers:        NewPeers(node_ips, port),
 		DistributorC: make(chan *Message),
 		pendingMsgs:  utils.NewSyncMap[int64, chan bool](),
 		onCommit:     onCommit,
@@ -142,37 +165,29 @@ func (r *Raft) StartLeaderElection() {
 
 	r.sm.SetState(CANDIDATE)
 
-	votes := make(chan int, len(r.peers))
+	votes := make(chan int, r.peers.len)
 
 	current_term := r.sm.GetTerm()
 	r.sm.SetTerm(current_term+1, r.sm.GetId())
 
 	go func() {
-		wg := sync.WaitGroup{}
-		for _, peer := range r.peers {
-			wg.Add(1)
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), time.Duration(TIME_RATE)*time.Millisecond)
-				defer cancel()
+		r.peers.Boardcast(func(peer *Peer) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(TIME_RATE)*time.Millisecond)
+			defer cancel()
 
-				response, err := peer.c.RequestVote(ctx, &ptypes.VoteRequest{
-					Term:         current_term + 1,
-					CandidateId:  r.sm.GetId(),
-					LastLogIndex: r.sm.GetLogIndex(),
-					LastLogTerm:  r.sm.GetPrevLogTerm(),
-				})
+			response, err := peer.c.RequestVote(ctx, &ptypes.VoteRequest{
+				Term:         current_term + 1,
+				CandidateId:  r.sm.GetId(),
+				LastLogIndex: r.sm.GetLogIndex(),
+				LastLogTerm:  r.sm.GetPrevLogTerm(),
+			})
 
-				if err == nil && response.VoteGranted {
-					votes <- 1
-				} else {
-					votes <- 0
-				}
-
-				wg.Done()
-			}()
-		}
-
-		wg.Wait()
+			if err == nil && response.VoteGranted {
+				votes <- 1
+			} else {
+				votes <- 0
+			}
+		})
 		close(votes)
 	}()
 
@@ -182,7 +197,7 @@ func (r *Raft) StartLeaderElection() {
 		voteCount += vote
 	}
 
-	if voteCount <= (len(r.peers) / 2) {
+	if voteCount <= (r.peers.len / 2) {
 		log.Println("ELECTION LOST")
 		r.sm.SetState(FOLLOWER)
 		r.ResetTimer()
@@ -214,67 +229,65 @@ func (r *Raft) DistributeLogEntry() {
 }
 
 func (r *Raft) ReplicateLog() {
-	for ip, peer := range r.peers {
-		go func() {
-			for {
-				nextIdx, ok := r.sm.NextIndex.Get(ip)
-				if !ok {
-					r.sm.NextIndex.Set(ip, r.sm.GetLogIndex()+1)
-					nextIdx = r.sm.GetLogIndex() + 1
-				}
-
-				matchIdx, ok := r.sm.MatchIndex.Get(ip)
-				if !ok {
-					// TODO: is problematic. this should be -1.
-					r.sm.MatchIndex.Set(ip, r.sm.GetLogIndex())
-					matchIdx = r.sm.GetLogIndex()
-				}
-
-				logs := r.sm.logEntries[nextIdx:] // Probably will trigger come race condition but will deal with it later.
-
-				ctx := context.Background()
-				response, err := peer.c.AppendEntries(ctx, &ptypes.AppendRequest{
-					Term:         r.sm.GetTerm(),
-					LeaderId:     r.sm.GetId(),
-					PrevLogIndex: matchIdx, // Actully this is  problematic....
-					PrevLogTerm:  r.sm.GetPrevLogTerm(),
-					LeaderCommit: r.sm.GetCommitIndex(),
-					Entries:      logs,
-				})
-
-				if err != nil { // If it errors the then client is offline.
-					break // Update during next heart beat
-				}
-
-				if response.Success {
-					r.sm.MatchIndex.Set(ip, nextIdx+int64(len(logs))-1)
-					r.sm.NextIndex.Set(ip, nextIdx+int64(len(logs)))
-
-					r.CheckAndCommit()
-					break
-				} else {
-					// note; nextIdx == 0 && matchIdx == -1 is fine, but i check this because, we don't want to go below this.
-					if nextIdx <= 0 {
-						log.Println("[nextIdx <= 0] THIS SHOULD NOT BE REACHABLE!")
-						break
-					}
-					r.sm.NextIndex.Set(ip, nextIdx-1)
-
-					if matchIdx <= -1 {
-						log.Println("[matchIdx <= -1] THIS SHOULD NOT BE REACHABLE!")
-						break
-					}
-					r.sm.MatchIndex.Set(ip, matchIdx-1)
-				}
+	r.peers.Boardcast(func(peer *Peer) {
+		for {
+			nextIdx, ok := r.sm.NextIndex.Get(peer.ip)
+			if !ok {
+				r.sm.NextIndex.Set(peer.ip, r.sm.GetLogIndex()+1)
+				nextIdx = r.sm.GetLogIndex() + 1
 			}
-		}()
-	}
+
+			matchIdx, ok := r.sm.MatchIndex.Get(peer.ip)
+			if !ok {
+				// TODO: is problematic. this should be -1.
+				r.sm.MatchIndex.Set(peer.ip, r.sm.GetLogIndex())
+				matchIdx = r.sm.GetLogIndex()
+			}
+
+			logs := r.sm.logEntries[nextIdx:] // Probably will trigger come race condition but will deal with it later.
+
+			ctx := context.Background()
+			response, err := peer.c.AppendEntries(ctx, &ptypes.AppendRequest{
+				Term:         r.sm.GetTerm(),
+				LeaderId:     r.sm.GetId(),
+				PrevLogIndex: matchIdx, // Actully this is  problematic....
+				PrevLogTerm:  r.sm.GetPrevLogTerm(),
+				LeaderCommit: r.sm.GetCommitIndex(),
+				Entries:      logs,
+			})
+
+			if err != nil { // If it errors the then client is offline.
+				break // Update during next heart beat
+			}
+
+			if response.Success {
+				r.sm.MatchIndex.Set(peer.ip, nextIdx+int64(len(logs))-1)
+				r.sm.NextIndex.Set(peer.ip, nextIdx+int64(len(logs)))
+
+				r.CheckAndCommit()
+				break
+			} else {
+				// note; nextIdx == 0 && matchIdx == -1 is fine, but i check this because, we don't want to go below this.
+				if nextIdx <= 0 {
+					log.Println("[nextIdx <= 0] THIS SHOULD NOT BE REACHABLE!")
+					break
+				}
+				r.sm.NextIndex.Set(peer.ip, nextIdx-1)
+
+				if matchIdx <= -1 {
+					log.Println("[matchIdx <= -1] THIS SHOULD NOT BE REACHABLE!")
+					break
+				}
+				r.sm.MatchIndex.Set(peer.ip, matchIdx-1)
+			}
+		}
+	})
 }
 
 func (r *Raft) CheckAndCommit() {
 	matchIdxs := []int64{r.sm.GetLogIndex()}
 
-	for ip, _ := range r.peers {
+	for _, ip := range r.peers.ips {
 		idx, _ := r.sm.MatchIndex.Get(ip)
 		matchIdxs = append(matchIdxs, idx)
 	}
@@ -434,13 +447,7 @@ func (r *Raft) ListenAndServe() error {
 }
 
 func (r *Raft) Close() {
-	for _, peer := range r.peers {
-		err := peer.conn.Close()
-		if err != nil {
-			log.Printf("Error closing connection %s: %v\n", peer.ip, err)
-		}
-	}
-
+	r.peers.Close()
 	r.server.GracefulStop()
 }
 
