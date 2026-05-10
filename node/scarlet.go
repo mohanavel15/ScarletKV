@@ -30,11 +30,13 @@ func NewScarlet(ip string, node_ips []string) *Scarlet {
 	s.resp.Middleware.Add(s.LeaderMiddleware)
 
 	s.resp.RegisterCommand("PING", s.Ping)
+	s.resp.RegisterCommand("ECHO", s.Echo)
 	s.resp.RegisterCommand("GET", s.Get)
 	s.resp.RegisterCommand("SET", s.Set)
 	s.resp.RegisterCommand("DEL", s.Delete)
 	s.resp.RegisterCommand("INCRBY", s.ChanageBy)
 	s.resp.RegisterCommand("DECRBY", s.ChanageBy)
+	s.resp.RegisterCommand("EXISTS", s.Exists)
 
 	return &s
 }
@@ -51,6 +53,10 @@ func (s *Scarlet) Ping(value *resp.Value) *resp.Value {
 	return resp.NewSimpleString("PONG")
 }
 
+func (s *Scarlet) Echo(value *resp.Value) *resp.Value {
+	return value
+}
+
 func (s *Scarlet) Get(value *resp.Value) *resp.Value {
 	if len(value.Array) != 2 || !resp.IsString(value.Array[1]) {
 		return resp.NewError("Invaild RESP Command!")
@@ -60,10 +66,25 @@ func (s *Scarlet) Get(value *resp.Value) *resp.Value {
 
 	val, ok := s.store.Get(key)
 	if !ok {
-		return resp.NewError("Key Not Found")
+		return resp.NewBulkString("")
 	}
 
 	return ProtoVal2RESP(val)
+}
+
+func (s *Scarlet) Exists(value *resp.Value) *resp.Value {
+	if len(value.Array) != 2 || !resp.IsString(value.Array[1]) {
+		return resp.NewError("Invaild RESP Command!")
+	}
+
+	key := value.Array[1].String
+
+	_, ok := s.store.Get(key)
+	if !ok {
+		return resp.NewInteger(0)
+	}
+
+	return resp.NewInteger(1)
 }
 
 func (s *Scarlet) Set(value *resp.Value) *resp.Value {
@@ -102,6 +123,10 @@ func (s *Scarlet) Delete(value *resp.Value) *resp.Value {
 }
 
 func (s *Scarlet) ChanageBy(value *resp.Value) *resp.Value {
+	if len(value.Array) != 3 || !resp.IsString(value.Array[1]) || !(resp.IsString(value.Array[2]) || value.Array[2].Type != resp.Integer) {
+		return resp.NewError("Invaild RESP Command!")
+	}
+
 	cmd := value.Array[0].String
 	key := value.Array[1].String
 	val := value.Array[2]

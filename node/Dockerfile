@@ -6,8 +6,10 @@ COPY go.sum go.sum
 
 RUN go mod download
 
+RUN apk add --no-cache gcc musl-dev
+
 COPY . .
 
-RUN go build
+RUN CGO_ENABLED=1 go build -race
 
 CMD ["/server/node"]
