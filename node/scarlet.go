@@ -16,7 +16,7 @@ type Scarlet struct {
 }
 
 func NewScarlet(ip string, node_ips []string) *Scarlet {
-	store := db.NewStore()
+	store := db.NewStore(fmt.Sprintf("/scarletkv/%s", ip))
 
 	raft := raft.NewRaft(ip, 6000, node_ips, store.Commit)
 	resp := resp.NewHandler(ip, 6379)
@@ -42,7 +42,7 @@ func NewScarlet(ip string, node_ips []string) *Scarlet {
 }
 
 func (s *Scarlet) LeaderMiddleware(value *resp.Value, next func(*resp.Value) *resp.Value) *resp.Value {
-	if s.raft.SM().GetState() != raft.LEADER {
+	if s.raft.GetState() != raft.LEADER {
 		return resp.NewError(fmt.Sprintf("Not Leader, should contact %s", s.raft.SM().GetLeader()))
 	}
 

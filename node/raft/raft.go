@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"net"
 	"node/ptypes"
 	"node/utils"
@@ -12,134 +13,115 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
-type Peer struct {
-	ip   string
-	c    ptypes.RaftClient
-	conn *grpc.ClientConn
-}
+var TIME_RATE int64 = 150
 
-func NewPeer(ip string, port int) *Peer {
-	// Well an interesting observation I had is it doesn't have to connect client? only connects when it needs to send messages?
-	conn, err := grpc.NewClient(fmt.Sprintf("%s:%d", ip, 6000), grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		// What type error can even occur here?
-		fmt.Println("What happened here ????", err.Error())
-	}
+type State int
 
-	return &Peer{
-		ip:   ip,
-		c:    ptypes.NewRaftClient(conn),
-		conn: conn,
-	}
-}
-
-type Peers struct {
-	ips   []string
-	port  int
-	peers map[string]*Peer
-	len   int
-	mx    sync.RWMutex
-}
-
-func NewPeers(ips []string, port int) *Peers {
-	peers := map[string]*Peer{}
-
-	for _, ip := range ips {
-		peer := NewPeer(ip, port)
-		peers[ip] = peer
-	}
-
-	return &Peers{
-		ips:   ips,
-		port:  port,
-		peers: peers,
-		len:   len(ips),
-	}
-}
-
-func (p *Peers) Boardcast(fn func(*Peer)) {
-	p.mx.RLock()
-	defer p.mx.RUnlock()
-
-	wg := sync.WaitGroup{}
-	for _, peer := range p.peers {
-		wg.Add(1)
-		go func() {
-			fn(peer)
-			wg.Done()
-		}()
-	}
-	wg.Wait()
-}
-
-func (p *Peers) Close() {
-	p.mx.Lock()
-	defer p.mx.Unlock()
-
-	for _, peer := range p.peers {
-		err := peer.conn.Close()
-		if err != nil {
-			log.Printf("Error closing connection %s: %v\n", peer.ip, err)
-		}
-	}
-}
+const (
+	FOLLOWER State = iota
+	CANDIDATE
+	LEADER
+)
 
 type Raft struct {
 	ptypes.UnimplementedRaftServer
-	ip    string
-	port  int
-	sm    *StateMachine
-	timer *time.Timer
-	peers *Peers
+	server *grpc.Server
+
+	ip   string
+	port int
+
+	leaderIP string
+	peers    *Peers
+
+	timeout int64
+	timer   *time.Timer
 
 	DistributorC chan *Message
 	onCommit     func(*ptypes.LogEntry) bool
 
-	pendingMsgs utils.SyncMap[int64, chan bool]
-	server      *grpc.Server
+	mx sync.RWMutex
 
-	mx sync.Mutex
+	// General States
+	term       int64
+	logIndex   int64
+	votedFor   string
+	state      State
+	logEntries []*ptypes.LogEntry
+
+	// Volatile States
+	commitIndex int64
+	lastApplied int64
+
+	// Volatile Leader States
+	nextIndex   utils.SyncMap[string, int64]
+	matchIndex  utils.SyncMap[string, int64]
+	pendingMsgs utils.SyncMap[int64, chan bool]
 }
 
 func NewRaft(ip string, port int, node_ips []string, onCommit func(*ptypes.LogEntry) bool) *Raft {
-	sm := NewStateMachine(ip)
-
 	return &Raft{
 		ip:           ip,
 		port:         port,
-		sm:           sm,
+		timeout:      rand.Int64N(TIME_RATE) + TIME_RATE,
 		timer:        nil,
+		leaderIP:     "",
 		peers:        NewPeers(node_ips, port),
 		DistributorC: make(chan *Message),
-		pendingMsgs:  utils.NewSyncMap[int64, chan bool](),
 		onCommit:     onCommit,
 		server:       grpc.NewServer(),
+
+		// General States
+		term:       0,
+		logIndex:   -1,
+		votedFor:   "",
+		state:      FOLLOWER,
+		logEntries: []*ptypes.LogEntry{},
+
+		// Volatile States
+		commitIndex: -1,
+		lastApplied: -1,
+
+		// Volatile Leader States
+		nextIndex:   utils.NewSyncMap[string, int64](),
+		matchIndex:  utils.NewSyncMap[string, int64](),
+		pendingMsgs: utils.NewSyncMap[int64, chan bool](),
 	}
 }
 
-// TEMP FIX for now....
-func (r *Raft) SM() *StateMachine {
-	return r.sm
+func (r *Raft) GetState() State {
+	r.mx.RLock()
+	defer r.mx.RUnlock()
+
+	return r.state
+}
+
+func (r *Raft) GetLeader() string {
+	r.mx.RLock()
+	defer r.mx.RUnlock()
+
+	return r.leaderIP
 }
 
 func (r *Raft) ResetTimer() {
-	r.mx.Lock()
-	defer r.mx.Unlock()
-
-	r.timer.Reset(time.Duration(r.sm.timeout) * time.Millisecond)
+	if r.timer != nil {
+		r.timer.Reset(time.Duration(r.timeout) * time.Millisecond)
+	}
 }
 
 func (r *Raft) HandleTimeout() {
 	for {
 		<-r.timer.C
-		if r.sm.GetState() == LEADER {
+		r.mx.RLock()
+		state := r.state
+		r.mx.RUnlock()
+
+		if state == LEADER {
 			continue
 		}
 
-		fmt.Println("Hit The Timout!", r.sm.timeout, "ms")
+		fmt.Println("Hit The Timout!", r.timeout, "ms")
 		r.StartLeaderElection()
 	}
 }
@@ -149,7 +131,11 @@ func (r *Raft) StartHeartBeat() {
 	timer := time.NewTimer(heart_beat_ms)
 
 	for {
-		if r.sm.GetState() != LEADER {
+		r.mx.RLock()
+		state := r.state
+		r.mx.RUnlock()
+
+		if state != LEADER {
 			timer.Stop()
 			break
 		}
@@ -161,14 +147,26 @@ func (r *Raft) StartHeartBeat() {
 }
 
 func (r *Raft) StartLeaderElection() {
+	r.mx.Lock()
+	defer r.mx.Unlock()
+
 	log.Println("STARTING AN ELETION")
 
-	r.sm.SetState(CANDIDATE)
+	r.state = CANDIDATE
 
 	votes := make(chan int, r.peers.len)
 
-	current_term := r.sm.GetTerm()
-	r.sm.SetTerm(current_term+1, r.sm.GetId())
+	r.term += 1
+	r.votedFor = r.ip
+
+	term := r.term
+	candidateId := r.ip
+	lastLogIndex := r.logIndex
+	lastLogTerm := int64(-1)
+
+	if lastLogIndex >= 0 {
+		lastLogTerm = r.logEntries[lastLogIndex].Term
+	}
 
 	go func() {
 		r.peers.Boardcast(func(peer *Peer) {
@@ -176,10 +174,10 @@ func (r *Raft) StartLeaderElection() {
 			defer cancel()
 
 			response, err := peer.c.RequestVote(ctx, &ptypes.VoteRequest{
-				Term:         current_term + 1,
-				CandidateId:  r.sm.GetId(),
-				LastLogIndex: r.sm.GetLogIndex(),
-				LastLogTerm:  r.sm.GetPrevLogTerm(),
+				Term:         term,
+				CandidateId:  candidateId,
+				LastLogIndex: lastLogIndex,
+				LastLogTerm:  lastLogTerm,
 			})
 
 			if err == nil && response.VoteGranted {
@@ -199,12 +197,12 @@ func (r *Raft) StartLeaderElection() {
 
 	if voteCount <= (r.peers.len / 2) {
 		log.Println("ELECTION LOST")
-		r.sm.SetState(FOLLOWER)
+		r.state = FOLLOWER
 		r.ResetTimer()
 		return
 	}
 
-	r.sm.SetState(LEADER)
+	r.state = LEADER
 	r.ResetTimer()
 
 	log.Println("I BECOME A LEADER!!!")
@@ -215,80 +213,112 @@ func (r *Raft) StartLeaderElection() {
 
 func (r *Raft) DistributeLogEntry() {
 	for msg := range r.DistributorC {
-		if r.sm.GetState() != LEADER {
+		r.mx.Lock()
+		if r.state == LEADER {
+			r.logEntries = append(r.logEntries, msg.log)
+			r.logIndex += 1
+			r.pendingMsgs.Set(r.logIndex, msg.success)
+			r.mx.Unlock()
+			fmt.Println("Distributing logs.........")
+			r.ReplicateLog()
+		} else {
+			r.mx.Unlock()
 			msg.success <- false
 			close(msg.success)
-			continue
 		}
-
-		idx := r.sm.LogAppend(msg.log)
-		r.pendingMsgs.Set(idx, msg.success)
-		fmt.Println("Distributing logs.........")
-		r.ReplicateLog()
 	}
 }
 
 func (r *Raft) ReplicateLog() {
+	r.mx.RLock()
+	ip := r.ip
+	currentTerm := r.term
+	commitIndex := r.commitIndex
+	logIndex := r.logIndex
+	r.mx.RUnlock()
+
 	r.peers.Boardcast(func(peer *Peer) {
 		for {
-			nextIdx, ok := r.sm.NextIndex.Get(peer.ip)
+			nextIdx, ok := r.nextIndex.Get(peer.ip)
 			if !ok {
-				r.sm.NextIndex.Set(peer.ip, r.sm.GetLogIndex()+1)
-				nextIdx = r.sm.GetLogIndex() + 1
+				nextIdx = logIndex + 1
+				r.nextIndex.Set(peer.ip, nextIdx)
 			}
 
-			matchIdx, ok := r.sm.MatchIndex.Get(peer.ip)
-			if !ok {
-				// TODO: is problematic. this should be -1.
-				r.sm.MatchIndex.Set(peer.ip, r.sm.GetLogIndex())
-				matchIdx = r.sm.GetLogIndex()
+			r.mx.RLock()
+			if r.state != LEADER || r.term != currentTerm {
+				r.mx.RUnlock()
+				return
 			}
 
-			logs := r.sm.logEntries[nextIdx:] // Probably will trigger come race condition but will deal with it later.
+			if nextIdx > int64(len(r.logEntries)) {
+				nextIdx = int64(len(r.logEntries))
+			}
 
-			ctx := context.Background()
+			logs := make([]*ptypes.LogEntry, int64(len(r.logEntries))-nextIdx)
+			copy(logs, r.logEntries[nextIdx:])
+
+			previousLogTerm := int64(-1)
+			if nextIdx > 0 && nextIdx-1 < int64(len(r.logEntries)) {
+				previousLogTerm = r.logEntries[nextIdx-1].Term
+			}
+			r.mx.RUnlock()
+
+			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(TIME_RATE)*time.Millisecond)
 			response, err := peer.c.AppendEntries(ctx, &ptypes.AppendRequest{
-				Term:         r.sm.GetTerm(),
-				LeaderId:     r.sm.GetId(),
-				PrevLogIndex: matchIdx, // Actully this is  problematic....
-				PrevLogTerm:  r.sm.GetPrevLogTerm(),
-				LeaderCommit: r.sm.GetCommitIndex(),
+				Term:         currentTerm,
+				LeaderId:     ip,
+				PrevLogIndex: nextIdx - 1,
+				PrevLogTerm:  previousLogTerm,
+				LeaderCommit: commitIndex,
 				Entries:      logs,
 			})
 
-			if err != nil { // If it errors the then client is offline.
-				break // Update during next heart beat
+			cancel()
+			if err != nil {
+				// If it errors the then client is offline.
+				// Break, Update during next heart beat
+				break
 			}
 
 			if response.Success {
-				r.sm.MatchIndex.Set(peer.ip, nextIdx+int64(len(logs))-1)
-				r.sm.NextIndex.Set(peer.ip, nextIdx+int64(len(logs)))
-
-				r.CheckAndCommit()
+				r.matchIndex.Set(peer.ip, nextIdx+int64(len(logs))-1)
+				r.nextIndex.Set(peer.ip, nextIdx+int64(len(logs)))
 				break
 			} else {
-				// note; nextIdx == 0 && matchIdx == -1 is fine, but i check this because, we don't want to go below this.
+				if response.Term > currentTerm {
+					r.mx.Lock()
+					if response.Term > r.term {
+						r.term = response.Term
+						r.state = FOLLOWER
+						r.votedFor = ""
+						r.ResetTimer()
+					}
+					r.mx.Unlock()
+					return
+				}
+
 				if nextIdx <= 0 {
 					log.Println("[nextIdx <= 0] THIS SHOULD NOT BE REACHABLE!")
 					break
 				}
-				r.sm.NextIndex.Set(peer.ip, nextIdx-1)
 
-				if matchIdx <= -1 {
-					log.Println("[matchIdx <= -1] THIS SHOULD NOT BE REACHABLE!")
-					break
-				}
-				r.sm.MatchIndex.Set(peer.ip, matchIdx-1)
+				r.nextIndex.Set(peer.ip, nextIdx-1)
 			}
 		}
 	})
+
+	r.CheckAndCommit()
 }
 
 func (r *Raft) CheckAndCommit() {
-	matchIdxs := []int64{r.sm.GetLogIndex()}
+	r.mx.Lock()
+	defer r.mx.Unlock()
+
+	matchIdxs := []int64{r.logIndex}
 
 	for _, ip := range r.peers.ips {
-		idx, _ := r.sm.MatchIndex.Get(ip)
+		idx, _ := r.matchIndex.Get(ip)
 		matchIdxs = append(matchIdxs, idx)
 	}
 
@@ -298,108 +328,124 @@ func (r *Raft) CheckAndCommit() {
 
 	majority_idx := matchIdxs[len(matchIdxs)/2]
 
-	if majority_idx > r.sm.GetCommitIndex() {
+	if majority_idx > r.commitIndex {
 		fmt.Println("Mojority has replicated so commiting up to index ", majority_idx)
 		r.Commit(majority_idx)
 	}
 }
 
 func (r *Raft) RequestVote(ctx context.Context, req *ptypes.VoteRequest) (*ptypes.VoteResponse, error) {
-	if req.Term <= r.sm.GetTerm() {
+	r.mx.Lock()
+	defer r.mx.Unlock()
+
+	if req.Term < r.term {
 		return &ptypes.VoteResponse{
-			Term:        r.sm.GetTerm(),
+			Term:        r.term,
 			VoteGranted: false,
 		}, nil
 	}
 
-	// Huhhhhhhhhhhhhhhhhhhhh
-	if r.sm.GetTerm() == req.Term && r.sm.GetVotedFor() != "" {
+	if req.Term > r.term {
+		r.term = req.Term
+		r.votedFor = ""
+		r.state = FOLLOWER
+		r.leaderIP = ""
+	}
+
+	if r.votedFor != "" && r.votedFor != req.CandidateId {
 		return &ptypes.VoteResponse{
-			Term:        r.sm.GetTerm(),
+			Term:        r.term,
 			VoteGranted: false,
 		}, nil
 	}
 
-	if req.LastLogIndex < r.sm.GetLogIndex() {
-		r.sm.SetTerm(req.Term, "")
+	lastLogTerm := int64(-1)
+	if r.logIndex >= 0 {
+		lastLogTerm = r.logEntries[r.logIndex].Term
+	}
 
+	if req.LastLogTerm < lastLogTerm || (req.LastLogTerm == lastLogTerm && req.LastLogIndex < r.logIndex) {
 		return &ptypes.VoteResponse{
-			Term:        r.sm.GetTerm(),
+			Term:        r.term,
 			VoteGranted: false,
 		}, nil
 	}
 
+	r.votedFor = req.CandidateId
 	r.ResetTimer()
 
-	r.sm.SetLeader("")
-	r.sm.SetTerm(req.Term, req.CandidateId)
-	r.sm.SetState(FOLLOWER)
-
 	return &ptypes.VoteResponse{
-		Term:        r.sm.GetTerm(),
+		Term:        r.term,
 		VoteGranted: true,
 	}, nil
 }
 
 func (r *Raft) AppendEntries(ctx context.Context, req *ptypes.AppendRequest) (*ptypes.AppendResponse, error) {
-	r.ResetTimer()
+	r.mx.Lock()
+	defer r.mx.Unlock()
 
-	if req.Term < r.sm.GetTerm() {
+	if req.Term < r.term {
 		return &ptypes.AppendResponse{
-			Term:    r.sm.GetTerm(),
+			Term:    r.term,
 			Success: false,
 		}, nil
-	} else if req.Term == r.sm.GetTerm() && r.sm.GetState() == LEADER {
-		return &ptypes.AppendResponse{
-			Term:    r.sm.GetTerm(),
-			Success: false,
-		}, nil
-	} else {
-		r.sm.SetTerm(req.Term, "")
-
-		r.sm.SetLeader(req.LeaderId)
-
-		if r.sm.GetState() != FOLLOWER {
-			r.sm.SetState(FOLLOWER)
-		}
 	}
 
-	if req.GetPrevLogIndex() > r.sm.GetLogIndex() {
-		return &ptypes.AppendResponse{
-			Term:    r.sm.GetTerm(),
-			Success: false,
-		}, nil
+	if req.Term > r.term || r.state != FOLLOWER {
+		r.term = req.Term
+		r.state = FOLLOWER
+		r.votedFor = ""
+	}
+
+	r.leaderIP = req.LeaderId
+	r.ResetTimer()
+
+	if req.PrevLogIndex >= 0 {
+		if req.PrevLogIndex >= int64(len(r.logEntries)) || r.logEntries[req.PrevLogIndex].Term != req.PrevLogTerm {
+			return &ptypes.AppendResponse{
+				Term:    r.term,
+				Success: false,
+			}, nil
+		}
 	}
 
 	for idx, logE := range req.Entries {
 		fmt.Println("Adding entries...")
-		r.sm.LogAppendOrInsertAt(req.PrevLogIndex+1+int64(idx), logE)
+
+		idx_calc := req.PrevLogIndex + 1 + int64(idx)
+
+		if idx_calc < int64(len(r.logEntries)) {
+			r.logEntries = r.logEntries[:idx_calc]
+			r.logEntries = append(r.logEntries, logE)
+		} else {
+			r.logEntries = append(r.logEntries, logE)
+		}
 	}
 
-	if req.LeaderCommit > r.sm.commitIndex {
+	r.logIndex = int64(len(r.logEntries) - 1)
+
+	if req.LeaderCommit > r.commitIndex {
 		fmt.Println("Committing to match leader...")
-		r.Commit(req.LeaderCommit)
+		targetCommit := req.LeaderCommit
+		if r.logIndex < targetCommit {
+			targetCommit = r.logIndex
+		}
+		r.Commit(targetCommit)
 	}
 
 	return &ptypes.AppendResponse{
-		Term:    r.sm.GetTerm(),
+		Term:    r.term,
 		Success: true,
 	}, nil
 }
 
-// TODO: This whole should do it inside a lock.
 func (r *Raft) Commit(logIdx int64) {
-	r.mx.Lock()
-	defer r.mx.Unlock()
-
-	commitIdx := r.sm.GetCommitIndex()
-
-	if logIdx <= commitIdx {
+	if logIdx <= r.commitIndex {
 		return
 	}
 
-	for i := commitIdx + 1; i < logIdx+1; i++ {
-		logEntry := r.sm.logEntries[i]
+	for i := r.commitIndex + 1; i < logIdx+1; i++ {
+		logEntry := r.logEntries[i]
 		if time.Now().UnixMilli() > logEntry.Deadline {
 			if ch, ok := r.pendingMsgs.Get(i); ok {
 				close(ch)
@@ -415,7 +461,7 @@ func (r *Raft) Commit(logIdx int64) {
 			break
 		}
 
-		r.sm.SetCommitIndex(logIdx)
+		r.commitIndex = logIdx
 	}
 }
 
@@ -437,7 +483,7 @@ func (r *Raft) ListenAndServe() error {
 	time.Sleep(time.Duration(TIME_RATE*2) * time.Millisecond)
 
 	r.mx.Lock()
-	timer := time.NewTimer(time.Duration(r.sm.timeout) * time.Millisecond)
+	timer := time.NewTimer(time.Duration(r.timeout) * time.Millisecond)
 	r.timer = timer
 	r.mx.Unlock()
 
@@ -449,37 +495,4 @@ func (r *Raft) ListenAndServe() error {
 func (r *Raft) Close() {
 	r.peers.Close()
 	r.server.GracefulStop()
-}
-
-type Message struct {
-	log         *ptypes.LogEntry
-	success     chan bool
-	hasTimedOut bool
-
-	mx sync.Mutex
-}
-
-func NewMessage(op ptypes.Op, key string, val *ptypes.Value) *Message {
-	return &Message{
-		log: &ptypes.LogEntry{
-			Op:       op,
-			Key:      key,
-			Value:    val,
-			Deadline: time.Now().Add(10 * time.Second).UnixMilli(), // Wait for 10 seconds
-		},
-		success:     make(chan bool, 1),
-		hasTimedOut: false,
-	}
-}
-
-func (m *Message) WaitForConfirmation() bool {
-	timer := time.NewTimer(time.Duration(m.log.Deadline-time.Now().UnixMilli()) * time.Millisecond)
-	defer timer.Stop()
-
-	select {
-	case val := <-m.success:
-		return val
-	case <-timer.C:
-		return false
-	}
 }
