@@ -43,7 +43,7 @@ func NewScarlet(ip string, node_ips []string) *Scarlet {
 
 func (s *Scarlet) LeaderMiddleware(value *resp.Value, next func(*resp.Value) *resp.Value) *resp.Value {
 	if s.raft.GetState() != raft.LEADER {
-		return resp.NewError(fmt.Sprintf("Not Leader, should contact %s", s.raft.SM().GetLeader()))
+		return resp.NewError(fmt.Sprintf("Not Leader, should contact %s", s.raft.GetLeader()))
 	}
 
 	return next(value)
@@ -172,4 +172,5 @@ func (s *Scarlet) Start() {
 func (s *Scarlet) Stop() {
 	s.raft.Close()
 	s.resp.Close()
+	s.store.Close()
 }
