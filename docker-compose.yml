@@ -8,14 +8,30 @@ services:
     environment:
       SERVER_HOST: "0.0.0.0"
       SERVER_PORT: "5000"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://telemetry:4317"
     networks:
       - locnet
+    depends_on:
+      telemetry:
+        condition: service_healthy
     deploy:
       replicas: 5
       resources:
         limits:
           memory: '512M'
           cpus: '1'
+  telemetry:
+    image: grafana/otel-lgtm
+    hostname: "telemetry"
+    networks:
+      locnet:
+        ipv4_address: 10.150.3.100
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
 
 networks:
   locnet:

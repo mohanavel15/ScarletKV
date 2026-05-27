@@ -3,10 +3,11 @@ package raft
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"math/rand/v2"
 	"net"
 	"node/ptypes"
+	"node/telemetry"
 	"node/utils"
 	"sort"
 	"sync"
@@ -41,7 +42,8 @@ type Raft struct {
 	DistributorC chan *Message
 	onCommit     func(*ptypes.LogEntry) bool
 
-	mx sync.RWMutex
+	logger *slog.Logger
+	mx     sync.RWMutex
 
 	// General States
 	term       int64
@@ -70,6 +72,7 @@ func NewRaft(ip string, port int, node_ips []string, onCommit func(*ptypes.LogEn
 		peers:        NewPeers(node_ips, port),
 		DistributorC: make(chan *Message),
 		onCommit:     onCommit,
+		logger:       telemetry.GetLogger("raft"),
 		server:       grpc.NewServer(),
 
 		// General States
@@ -121,7 +124,7 @@ func (r *Raft) HandleTimeout() {
 			continue
 		}
 
-		fmt.Println("Hit The Timout!", r.timeout, "ms")
+		r.logger.Info(fmt.Sprintf("Hit %dms timout!", r.timeout))
 		r.StartLeaderElection()
 	}
 }
@@ -150,7 +153,7 @@ func (r *Raft) StartLeaderElection() {
 	r.mx.Lock()
 	defer r.mx.Unlock()
 
-	log.Println("STARTING AN ELETION")
+	r.logger.Info("Starting an election")
 
 	r.state = CANDIDATE
 
@@ -196,7 +199,7 @@ func (r *Raft) StartLeaderElection() {
 	}
 
 	if voteCount <= (r.peers.len / 2) {
-		log.Println("ELECTION LOST")
+		r.logger.Info(fmt.Sprintf("Lost the election with %d votes", voteCount))
 		r.state = FOLLOWER
 		r.ResetTimer()
 		return
@@ -205,7 +208,7 @@ func (r *Raft) StartLeaderElection() {
 	r.state = LEADER
 	r.ResetTimer()
 
-	log.Println("I BECOME A LEADER!!!")
+	r.logger.Info(fmt.Sprintf("Won the election and become the leader with %d votes", voteCount))
 
 	go r.StartHeartBeat()
 	go r.DistributeLogEntry()
@@ -219,7 +222,7 @@ func (r *Raft) DistributeLogEntry() {
 			r.logIndex += 1
 			r.pendingMsgs.Set(r.logIndex, msg.success)
 			r.mx.Unlock()
-			fmt.Println("Distributing logs.........")
+			r.logger.Info("Distributing logs to the peers...")
 			r.ReplicateLog()
 		} else {
 			r.mx.Unlock()
@@ -299,7 +302,7 @@ func (r *Raft) ReplicateLog() {
 				}
 
 				if nextIdx <= 0 {
-					log.Println("[nextIdx <= 0] THIS SHOULD NOT BE REACHABLE!")
+					r.logger.Error("[nextIdx <= 0] THIS SHOULD NOT BE REACHABLE!")
 					break
 				}
 
@@ -329,7 +332,7 @@ func (r *Raft) CheckAndCommit() {
 	majority_idx := matchIdxs[len(matchIdxs)/2]
 
 	if majority_idx > r.commitIndex {
-		fmt.Println("Mojority has replicated so commiting up to index ", majority_idx)
+		r.logger.Info(fmt.Sprintf("Mojority has replicated %d log index. Commiting to DB", majority_idx))
 		r.Commit(majority_idx)
 	}
 }
@@ -374,6 +377,8 @@ func (r *Raft) RequestVote(ctx context.Context, req *ptypes.VoteRequest) (*ptype
 	r.votedFor = req.CandidateId
 	r.ResetTimer()
 
+	r.logger.Info(fmt.Sprintf("Term %d: Voted For %s", req.Term, req.CandidateId))
+
 	return &ptypes.VoteResponse{
 		Term:        r.term,
 		VoteGranted: true,
@@ -413,6 +418,7 @@ func (r *Raft) AppendEntries(ctx context.Context, req *ptypes.AppendRequest) (*p
 		fmt.Println("Adding entries...")
 
 		idx_calc := req.PrevLogIndex + 1 + int64(idx)
+		r.logger.Info(fmt.Sprintf("Adding log entry %d", idx_calc))
 
 		if idx_calc < int64(len(r.logEntries)) {
 			r.logEntries = r.logEntries[:idx_calc]
@@ -430,6 +436,8 @@ func (r *Raft) AppendEntries(ctx context.Context, req *ptypes.AppendRequest) (*p
 		if r.logIndex < targetCommit {
 			targetCommit = r.logIndex
 		}
+
+		r.logger.Info(fmt.Sprintf("Committing up to log index %d match leader...", targetCommit))
 		r.Commit(targetCommit)
 	}
 
