@@ -3,6 +3,8 @@ services:
   node:
     build: ./node
     hostname: "node"
+    volumes: 
+      - ./scarletkv:/scarletkv
     environment:
       SERVER_HOST: "0.0.0.0"
       SERVER_PORT: "5000"

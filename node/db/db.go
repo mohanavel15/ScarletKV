@@ -13,6 +13,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+const READ_ONLY = os.O_RDONLY
+const WRITE_ONLY = os.O_CREATE | os.O_WRONLY
+const APPEND_ONLY = os.O_CREATE | os.O_WRONLY | os.O_APPEND
+
 type Store struct {
 	path     string
 	wal_file *os.File
@@ -36,12 +40,31 @@ func NewStore(path string) *Store {
 }
 
 func (s *Store) restore() {
-	file, _ := os.OpenFile(fmt.Sprintf("%s/db.bin", s.path), os.O_CREATE|os.O_RDONLY, 0644)
-	data, _ := io.ReadAll(file)
+	db_path := fmt.Sprintf("%s/db.bin", s.path)
+	wal_path := fmt.Sprintf("%s/wal.bin", s.path)
 
-	proto.Unmarshal(data, s.store)
+	data, err := os.ReadFile(db_path)
+	if err == nil {
+		if len(data) > 0 {
+			err := proto.Unmarshal(data, s.store)
+			if err != nil {
+				panic("DB File Corrupted!")
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		panic("Unable to read DB file!")
+	}
 
-	wal_file, _ := os.OpenFile(fmt.Sprintf("%s/wal.bin", s.path), os.O_CREATE|os.O_RDONLY, 0644)
+	wal_file, err := os.OpenFile(wal_path, READ_ONLY, 0644)
+	if os.IsNotExist(err) {
+		s.wal_file, _ = os.OpenFile(wal_path, APPEND_ONLY, 0644)
+		return
+	} else if err != nil {
+		panic("Unable to read WAL file!")
+	}
+	defer wal_file.Close()
+
+	wal_file.Stat()
 
 	for {
 		size_buf := [4]byte{}
@@ -76,7 +99,7 @@ func (s *Store) restore() {
 			fmt.Println("CRIT: WHAT HAPPEND HERE (Read-Msg)", 4, size)
 		}
 
-		var log *ptypes.LogEntry
+		log := &ptypes.LogEntry{}
 
 		err = proto.Unmarshal(msg_buf, log)
 		if err != nil {
@@ -86,14 +109,14 @@ func (s *Store) restore() {
 		s.processLog(log)
 	}
 
-	file.Close()
 	wal_file.Truncate(0)
-	wal_file.Close()
-
-	s.wal_file, _ = os.OpenFile(fmt.Sprintf("%s/wal.bin", s.path), os.O_CREATE|os.O_APPEND, 0644)
+	s.wal_file, _ = os.OpenFile(wal_path, APPEND_ONLY, 0644)
 }
 
 func (s *Store) SaveDB() {
+	db_path := fmt.Sprintf("%s/db.bin", s.path)
+	tmp_db_path := fmt.Sprintf("%s/tmp_db.bin", s.path)
+
 	duration := time.Second * 5
 
 	if s.timer == nil {
@@ -107,17 +130,16 @@ func (s *Store) SaveDB() {
 		s.mx.Lock()
 
 		buffer, _ := proto.Marshal(s.store)
-		nfile, _ := os.OpenFile(fmt.Sprintf("%s/tmp_db.bin", s.path), os.O_CREATE|os.O_WRONLY, 0644)
+		nfile, _ := os.OpenFile(tmp_db_path, WRITE_ONLY, 0644)
 		nfile.Write(buffer)
 		nfile.Close()
 
-		err := os.Rename(fmt.Sprintf("%s/db.bin", s.path), fmt.Sprintf("%s/tmp_db.bin", s.path))
+		err := os.Rename(tmp_db_path, db_path)
 		if err != nil {
-			panic("Ahhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh")
+			panic("Unable able commit.")
 		}
 
 		s.wal_file.Truncate(0)
-
 		s.mx.Unlock()
 	}
 }
@@ -137,12 +159,7 @@ func (s *Store) Commit(log *ptypes.LogEntry) bool {
 	buffer := Marshal(log)
 	size, err := s.wal_file.Write(buffer)
 	if err != nil {
-		fmt.Println("CRIT: WHAT HAPPEND HERE", err.Error())
-		return false
-	}
-
-	if size != len(buffer) {
-		fmt.Println("CRIT: WHAT HAPPEND HERE", size, "!=", len(buffer))
+		fmt.Println("CRIT: WHAT HAPPEND HERE", err.Error(), size, len(buffer))
 		return false
 	}
 
