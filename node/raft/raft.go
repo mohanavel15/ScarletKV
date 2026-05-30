@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/metric"
 	"google.golang.org/grpc"
 )
 
@@ -42,6 +43,7 @@ type Raft struct {
 	DistributorC chan *Message
 	onCommit     func(*ptypes.LogEntry) bool
 
+	meter  metric.Meter
 	logger *slog.Logger
 	mx     sync.RWMutex
 
@@ -72,6 +74,7 @@ func NewRaft(ip string, port int, node_ips []string, onCommit func(*ptypes.LogEn
 		peers:        NewPeers(node_ips, port),
 		DistributorC: make(chan *Message),
 		onCommit:     onCommit,
+		meter:        telemetry.GetMeter("raft"),
 		logger:       telemetry.GetLogger("raft"),
 		server:       grpc.NewServer(),
 
@@ -415,8 +418,6 @@ func (r *Raft) AppendEntries(ctx context.Context, req *ptypes.AppendRequest) (*p
 	}
 
 	for idx, logE := range req.Entries {
-		fmt.Println("Adding entries...")
-
 		idx_calc := req.PrevLogIndex + 1 + int64(idx)
 		r.logger.Info(fmt.Sprintf("Adding log entry %d", idx_calc))
 
@@ -431,7 +432,6 @@ func (r *Raft) AppendEntries(ctx context.Context, req *ptypes.AppendRequest) (*p
 	r.logIndex = int64(len(r.logEntries) - 1)
 
 	if req.LeaderCommit > r.commitIndex {
-		fmt.Println("Committing to match leader...")
 		targetCommit := req.LeaderCommit
 		if r.logIndex < targetCommit {
 			targetCommit = r.logIndex
