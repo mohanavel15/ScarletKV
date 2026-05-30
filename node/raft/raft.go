@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"go.opentelemetry.io/otel/metric"
 	"google.golang.org/grpc"
 )
 
@@ -43,7 +42,7 @@ type Raft struct {
 	DistributorC chan *Message
 	onCommit     func(*ptypes.LogEntry) bool
 
-	meter  metric.Meter
+	metric *RaftMetric
 	logger *slog.Logger
 	mx     sync.RWMutex
 
@@ -74,7 +73,7 @@ func NewRaft(ip string, port int, node_ips []string, onCommit func(*ptypes.LogEn
 		peers:        NewPeers(node_ips, port),
 		DistributorC: make(chan *Message),
 		onCommit:     onCommit,
-		meter:        telemetry.GetMeter("raft"),
+		metric:       NewRaftMetric(telemetry.GetMeter("raft")),
 		logger:       telemetry.GetLogger("raft"),
 		server:       grpc.NewServer(),
 
@@ -159,10 +158,12 @@ func (r *Raft) StartLeaderElection() {
 	r.logger.Info("Starting an election")
 
 	r.state = CANDIDATE
+	r.metric.StateGauge.Record(context.Background(), int64(CANDIDATE))
 
 	votes := make(chan int, r.peers.len)
 
 	r.term += 1
+	r.metric.TermGauge.Record(context.Background(), r.term)
 	r.votedFor = r.ip
 
 	term := r.term
@@ -204,11 +205,14 @@ func (r *Raft) StartLeaderElection() {
 	if voteCount <= (r.peers.len / 2) {
 		r.logger.Info(fmt.Sprintf("Lost the election with %d votes", voteCount))
 		r.state = FOLLOWER
+		r.metric.StateGauge.Record(context.Background(), int64(FOLLOWER))
 		r.ResetTimer()
 		return
 	}
 
 	r.state = LEADER
+	r.metric.StateGauge.Record(context.Background(), int64(LEADER))
+
 	r.ResetTimer()
 
 	r.logger.Info(fmt.Sprintf("Won the election and become the leader with %d votes", voteCount))
@@ -223,6 +227,7 @@ func (r *Raft) DistributeLogEntry() {
 		if r.state == LEADER {
 			r.logEntries = append(r.logEntries, msg.log)
 			r.logIndex += 1
+			r.metric.LogGauge.Record(context.Background(), r.logIndex)
 			r.pendingMsgs.Set(r.logIndex, msg.success)
 			r.mx.Unlock()
 			r.logger.Info("Distributing logs to the peers...")
@@ -296,7 +301,9 @@ func (r *Raft) ReplicateLog() {
 					r.mx.Lock()
 					if response.Term > r.term {
 						r.term = response.Term
+						r.metric.TermGauge.Record(context.Background(), r.term)
 						r.state = FOLLOWER
+						r.metric.StateGauge.Record(context.Background(), int64(FOLLOWER))
 						r.votedFor = ""
 						r.ResetTimer()
 					}
@@ -353,8 +360,10 @@ func (r *Raft) RequestVote(ctx context.Context, req *ptypes.VoteRequest) (*ptype
 
 	if req.Term > r.term {
 		r.term = req.Term
+		r.metric.TermGauge.Record(context.Background(), r.term)
 		r.votedFor = ""
 		r.state = FOLLOWER
+		r.metric.StateGauge.Record(context.Background(), int64(FOLLOWER))
 		r.leaderIP = ""
 	}
 
@@ -401,7 +410,9 @@ func (r *Raft) AppendEntries(ctx context.Context, req *ptypes.AppendRequest) (*p
 
 	if req.Term > r.term || r.state != FOLLOWER {
 		r.term = req.Term
+		r.metric.TermGauge.Record(context.Background(), r.term)
 		r.state = FOLLOWER
+		r.metric.StateGauge.Record(context.Background(), int64(FOLLOWER))
 		r.votedFor = ""
 	}
 
@@ -430,6 +441,7 @@ func (r *Raft) AppendEntries(ctx context.Context, req *ptypes.AppendRequest) (*p
 	}
 
 	r.logIndex = int64(len(r.logEntries) - 1)
+	r.metric.LogGauge.Record(context.Background(), r.logIndex)
 
 	if req.LeaderCommit > r.commitIndex {
 		targetCommit := req.LeaderCommit
@@ -470,6 +482,7 @@ func (r *Raft) Commit(logIdx int64) {
 		}
 
 		r.commitIndex = logIdx
+		r.metric.CommitGauge.Record(context.Background(), logIdx)
 	}
 }
 

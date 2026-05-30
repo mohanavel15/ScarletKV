@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"node/restapi"
 	"node/telemetry"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 )
 
 var nodes = map[string]bool{
@@ -20,6 +22,8 @@ var nodes = map[string]bool{
 }
 
 func main() {
+	time.Sleep(3 * time.Second)
+
 	ip := PrintStartUpInfo()
 	delete(nodes, ip)
 
@@ -42,11 +46,15 @@ func main() {
 
 	telemetry.GetLogger("main").Info(fmt.Sprintf("Hello from node at %s", ip))
 
+	handler := restapi.NewHTTPHandler(ip, 80)
+	defer handler.Close()
+	go handler.ListenAndServe()
+
 	scarlet := NewScarlet(ip, node_ips)
 	scarlet.Start()
+	defer scarlet.Stop()
 
 	<-ctx.Done()
-	scarlet.Stop()
 }
 
 func PrintStartUpInfo() string {

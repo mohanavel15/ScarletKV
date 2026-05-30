@@ -32,6 +32,9 @@ services:
       timeout: 3s
       retries: 5
       start_period: 15s
+    volumes:
+      - ./dashboard/dashboard-1780146703329.json:/otel-lgtm/grafana/conf/provisioning/dashboards/custom/custom-dashboard.json:ro
+      - ./dashboard/dashboards-provisioning.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/custom.yaml:ro
 
 networks:
   locnet:
