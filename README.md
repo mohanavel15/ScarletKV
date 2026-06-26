@@ -1,4 +1,14 @@
 # ScarletKV
 
 > [!NOTE]  
-> This is a prototype Implimentation done as final project in my bachelor's degree. If you're worried about AI slop, this is much worse human slop.
+> If you're worried about AI slop, this is much worse human slop.
+
+## To Run
+1. Build
+```bash
+docker-compose build
+```
+2. Run
+```
+docker-compose up
+ ```
